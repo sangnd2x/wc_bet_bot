@@ -35,7 +35,9 @@ How to play:
 	reply := tgbotapi.NewMessage(msg.Chat.ID, startMsg)
 	reply.ParseMode = "HTML"
 
-	b.api.Send(reply)
+	if _, err := b.api.Send(reply); err != nil {
+		log.Printf("failed to send /start reply to chat %d: %v", msg.Chat.ID, err)
+	}
 }
 
 // cmdUpcomingMatch handles /upcoming_match command
