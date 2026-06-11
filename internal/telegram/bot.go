@@ -94,8 +94,6 @@ func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 			b.cmdLeaderboard(ctx, msg)
 		case "bets":
 			b.cmdBets(ctx, msg)
-		case "set_result":
-			b.cmdSetResult(ctx, msg, args)
 		default:
 			reply := tgbotapi.NewMessage(msg.Chat.ID, "Unknown command: /"+cmd)
 			b.api.Send(reply)

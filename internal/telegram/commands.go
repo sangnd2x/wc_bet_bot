@@ -25,7 +25,6 @@ Available commands:
 /upcoming - Show next 3 upcoming matches
 /matches &lt;DDMMYYYY&gt; - Show matches for a specific date
 /result - Show current leaderboard
-/set_result &lt;match_id&gt; &lt;team&gt; - Set match result (admin only)
 /bets - Show active bets in this group
 /start - Show this help message
 
@@ -251,106 +250,6 @@ func (b *Bot) cmdLeaderboard(ctx context.Context, msg *tgbotapi.Message) {
 	b.api.Send(reply)
 }
 
-// cmdSetResult handles /set_result <match_id> <team> command (admin only)
-func (b *Bot) cmdSetResult(ctx context.Context, msg *tgbotapi.Message, args string) {
-	log.Printf("Handling /set_result command with args: %s", args)
-
-	// Check admin
-	if !b.IsAdmin(int64(msg.From.ID)) {
-		reply := tgbotapi.NewMessage(msg.Chat.ID, "Admin only.")
-		b.api.Send(reply)
-		return
-	}
-
-	parts := strings.Fields(args)
-	if len(parts) < 2 {
-		reply := tgbotapi.NewMessage(msg.Chat.ID, "Usage: /set_result <match_id> <team>\nTeam: home, away, draw")
-		b.api.Send(reply)
-		return
-	}
-
-	// Parse match_id
-	externalID, err := strconv.Atoi(parts[0])
-	if err != nil {
-		reply := tgbotapi.NewMessage(msg.Chat.ID, "Invalid match_id.")
-		b.api.Send(reply)
-		return
-	}
-
-	// Parse team
-	teamStr := strings.ToLower(parts[1])
-	var winner string
-	switch teamStr {
-	case "home":
-		winner = "HOME_TEAM"
-	case "away":
-		winner = "AWAY_TEAM"
-	case "draw":
-		winner = "DRAW"
-	default:
-		reply := tgbotapi.NewMessage(msg.Chat.ID, "Invalid team. Use: home, away, draw")
-		b.api.Send(reply)
-		return
-	}
-
-	// Look up match by external_id
-	match, err := b.db.GetMatchByExternalID(externalID)
-	if err != nil {
-		log.Printf("Failed to get match: %v", err)
-		reply := tgbotapi.NewMessage(msg.Chat.ID, "Failed to fetch match from DB.")
-		b.api.Send(reply)
-		return
-	}
-
-	if match == nil {
-		reply := tgbotapi.NewMessage(msg.Chat.ID, "Match not found.")
-		b.api.Send(reply)
-		return
-	}
-
-	// Update match result and resolve bets
-	homeScore := 0
-	awayScore := 0
-	if winner == "HOME_TEAM" {
-		homeScore = 1
-	} else if winner == "AWAY_TEAM" {
-		awayScore = 1
-	}
-
-	if err := b.db.UpdateMatchResult(externalID, winner, homeScore, awayScore); err != nil {
-		log.Printf("Failed to update match result: %v", err)
-		reply := tgbotapi.NewMessage(msg.Chat.ID, "Failed to update match result.")
-		b.api.Send(reply)
-		return
-	}
-
-	if err := b.db.ResolveBets(match.ID, winner); err != nil {
-		log.Printf("Failed to resolve bets: %v", err)
-		reply := tgbotapi.NewMessage(msg.Chat.ID, "Failed to resolve bets.")
-		b.api.Send(reply)
-		return
-	}
-
-	// Update Google Sheets for resolved bets
-	bets, err := b.db.GetBetsForMatch(match.ID)
-	if err != nil {
-		log.Printf("Failed to get bets for match: %v", err)
-	}
-
-	if len(bets) >= 2 {
-		bet1 := bets[0]
-		bet2 := bets[1]
-		if bet1.SheetsRow > 0 {
-			if err := b.sheetsClient.UpdateBetResult(ctx, bet1.SheetsRow, winner, bet1.Outcome, bet2.Outcome); err != nil {
-				log.Printf("Failed to update sheets for bet row %d: %v", bet1.SheetsRow, err)
-			}
-		}
-	}
-
-	// Send confirmation to group
-	msg2 := tgbotapi.NewMessage(msg.Chat.ID, fmt.Sprintf("✅ Result set for %s vs %s: Winner = %s", match.HomeTeam, match.AwayTeam, winner))
-	b.api.Send(msg2)
-}
 
 func min(a, b int) int {
 	if a < b {
