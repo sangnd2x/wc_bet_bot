@@ -86,12 +86,14 @@ func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 		switch cmd {
 		case "start":
 			b.cmdStart(ctx, msg)
-		case "upcoming_match", "upcoming-match":
+		case "upcoming_match", "upcoming-match", "upcoming":
 			b.cmdUpcomingMatch(ctx, msg)
 		case "matches":
 			b.cmdMatches(ctx, msg, args)
 		case "result", "leaderboard":
 			b.cmdLeaderboard(ctx, msg)
+		case "bets":
+			b.cmdBets(ctx, msg)
 		case "set_result":
 			b.cmdSetResult(ctx, msg, args)
 		default:

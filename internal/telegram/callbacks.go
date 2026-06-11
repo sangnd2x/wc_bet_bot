@@ -214,6 +214,10 @@ func (b *Bot) handleBetCallback(ctx context.Context, cq *tgbotapi.CallbackQuery)
 			editMsg := tgbotapi.NewEditMessageText(cq.Message.Chat.ID, cq.Message.MessageID, msgText)
 			editMsg.ParseMode = "HTML"
 			b.api.Send(editMsg)
+
+			// Send "Bet is on!" confirmation message to the group
+			confirmMsg := fmt.Sprintf("🎰 Bet is on!\n%s vs %s\n%s → %s\n%s → %s", match.HomeTeam, match.AwayTeam, user1Name, user1TeamName, user2Name, user2TeamName)
+			b.SendToChat(chatID, confirmMsg)
 		}
 	} else if len(updatedBets) == 1 && user1Bet != nil {
 		// If only one user has bet, edit the message to show who has bet and which side remains
@@ -240,10 +244,25 @@ func (b *Bot) handleBetCallback(ctx context.Context, cq *tgbotapi.CallbackQuery)
 			msgText = FormatMatchMessage(match, b.loc)
 			msgText += fmt.Sprintf("\n✅ %s → %s\n⏳ Waiting for partner to pick %s", betUserName, pickedTeam, remainingTeam)
 
-			// Edit message: keep keyboard
+			// Edit message: build keyboard with taken button showing username
 			editMsg := tgbotapi.NewEditMessageText(cq.Message.Chat.ID, cq.Message.MessageID, msgText)
 			editMsg.ParseMode = "HTML"
-			kb := MatchKeyboard(match)
+
+			// Build keyboard: taken button with ✅ label, remaining button with team name
+			takenButtonLabel := fmt.Sprintf("✅ %s", betUserName)
+			takenButtonData := fmt.Sprintf("bet:%d:%s", match.ExternalID, user1Bet.PickedTeam)
+			remainingButtonLabel := remainingTeam
+			remainingButtonData := fmt.Sprintf("bet:%d:%s", match.ExternalID, "AWAY_TEAM")
+			if user1Bet.PickedTeam == "AWAY_TEAM" {
+				remainingButtonData = fmt.Sprintf("bet:%d:HOME_TEAM", match.ExternalID)
+			}
+
+			kb := tgbotapi.NewInlineKeyboardMarkup(
+				tgbotapi.NewInlineKeyboardRow(
+					tgbotapi.NewInlineKeyboardButtonData(takenButtonLabel, takenButtonData),
+					tgbotapi.NewInlineKeyboardButtonData(remainingButtonLabel, remainingButtonData),
+				),
+			)
 			editMsg.ReplyMarkup = &kb
 			b.api.Send(editMsg)
 		}

@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"time"
 
 	"worldcup-bet-bot/internal/models"
 )
@@ -302,4 +303,42 @@ func scanBets(rows *sql.Rows) ([]*models.Bet, error) {
 	}
 
 	return bets, nil
+}
+
+// ActiveBet represents an unresolved bet with match info
+type ActiveBet struct {
+	HomeTeam   string
+	AwayTeam   string
+	KickoffUTC time.Time
+	UserName   string
+	PickedTeam string // "HOME_TEAM" or "AWAY_TEAM"
+}
+
+// GetActiveBetsInGroup returns all unresolved bets in a group, joined with match info
+func (db *DB) GetActiveBetsInGroup(groupChatID int64) ([]*ActiveBet, error) {
+	query := `
+		SELECT m.home_team, m.away_team, m.kickoff_utc,
+		       COALESCE(NULLIF(u.display_name,''), u.username, 'User') as user_name,
+		       b.picked_team
+		FROM bets b
+		JOIN matches m ON b.match_id = m.id
+		JOIN users u ON b.user_id = u.id
+		WHERE b.group_chat_id = ? AND b.resolved_at IS NULL
+		ORDER BY m.kickoff_utc ASC, b.created_at ASC`
+
+	rows, err := db.Query(query, groupChatID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query active bets: %w", err)
+	}
+	defer rows.Close()
+
+	var bets []*ActiveBet
+	for rows.Next() {
+		var ab ActiveBet
+		if err := rows.Scan(&ab.HomeTeam, &ab.AwayTeam, &ab.KickoffUTC, &ab.UserName, &ab.PickedTeam); err != nil {
+			return nil, fmt.Errorf("failed to scan active bet: %w", err)
+		}
+		bets = append(bets, &ab)
+	}
+	return bets, rows.Err()
 }

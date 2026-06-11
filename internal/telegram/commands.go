@@ -9,6 +9,7 @@ import (
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"worldcup-bet-bot/internal/db"
 )
 
 // cmdStart handles /start command
@@ -21,10 +22,11 @@ func (b *Bot) cmdStart(ctx context.Context, msg *tgbotapi.Message) {
 Welcome to World Cup 2026 Betting Bot! 🏆
 
 Available commands:
-/upcoming_match - Show next 3 upcoming matches
-/matches <DDMMYYYY> - Show matches for a specific date
+/upcoming - Show next 3 upcoming matches
+/matches &lt;DDMMYYYY&gt; - Show matches for a specific date
 /result - Show current leaderboard
 /set_result <match_id> <team> - Set match result (admin only)
+/bets - Show active bets in this group
 /start - Show this help message
 
 How to play:
@@ -355,4 +357,57 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// cmdBets handles /bets command
+func (b *Bot) cmdBets(ctx context.Context, msg *tgbotapi.Message) {
+	log.Println("Handling /bets command")
+
+	bets, err := b.db.GetActiveBetsInGroup(msg.Chat.ID)
+	if err != nil {
+		log.Printf("Failed to get active bets: %v", err)
+		b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, "Failed to fetch bets."))
+		return
+	}
+
+	if len(bets) == 0 {
+		b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, "No active bets."))
+		return
+	}
+
+	// Group bets by match (home_team + away_team + kickoff)
+	type matchKey struct {
+		home    string
+		away    string
+		kickoff time.Time
+	}
+	var order []matchKey
+	grouped := make(map[matchKey][]*db.ActiveBet)
+	for _, bet := range bets {
+		k := matchKey{bet.HomeTeam, bet.AwayTeam, bet.KickoffUTC}
+		if _, exists := grouped[k]; !exists {
+			order = append(order, k)
+		}
+		grouped[k] = append(grouped[k], bet)
+	}
+
+	text := "📋 <b>Active Bets</b>\n─────────────\n"
+	for _, k := range order {
+		matchBets := grouped[k]
+		kickoff := k.kickoff.In(b.loc)
+		text += fmt.Sprintf("\n🏆 <b>%s vs %s</b>\n📅 %s\n", k.home, k.away, kickoff.Format("Mon, 2 Jan 15:04 MST"))
+		for _, ab := range matchBets {
+			teamName := ab.AwayTeam
+			if ab.PickedTeam == "HOME_TEAM" {
+				teamName = ab.HomeTeam
+			}
+			text += fmt.Sprintf("  • %s → %s\n", ab.UserName, teamName)
+		}
+	}
+
+	reply := tgbotapi.NewMessage(msg.Chat.ID, text)
+	reply.ParseMode = "HTML"
+	if _, err := b.api.Send(reply); err != nil {
+		log.Printf("failed to send /bets reply: %v", err)
+	}
 }
