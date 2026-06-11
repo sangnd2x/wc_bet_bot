@@ -4,7 +4,6 @@ pipeline {
     environment {
         WORLDCUP_BOT_TELEGRAM_TOKEN     = credentials('WORLDCUP_BOT_TELEGRAM_TOKEN')
         WORLDCUP_BOT_ADMIN_TELEGRAM_ID  = credentials('WORLDCUP_BOT_ADMIN_TELEGRAM_ID')
-        WORLDCUP_BOT_GROUP_CHAT_ID      = credentials('WORLDCUP_BOT_GROUP_CHAT_ID')
         FOOTBALL_API_KEY                = credentials('FOOTBALL_API_KEY')
         SHEETS_SPREADSHEET_ID           = credentials('SHEETS_SPREADSHEET_ID')
 
@@ -30,7 +29,6 @@ pipeline {
                     sh '''
                         cat > .env << EOF
 TELEGRAM_TOKEN=${WORLDCUP_BOT_TELEGRAM_TOKEN}
-GROUP_CHAT_ID=${WORLDCUP_BOT_GROUP_CHAT_ID}
 ADMIN_TELEGRAM_ID=${WORLDCUP_BOT_ADMIN_TELEGRAM_ID}
 FOOTBALL_API_KEY=${FOOTBALL_API_KEY}
 COMPETITION_CODE=${COMPETITION_CODE}
@@ -79,7 +77,7 @@ EOF
                     curl -s -X POST "https://api.telegram.org/bot\${BOT_TOKEN}/sendMessage" \
                         -d chat_id="\${CHAT_ID}" \
                         -d parse_mode="Markdown" \
-                        -d text="✅ *worldcup-bet-bot deployed*%0ARepo: ${env.JOB_NAME}%0ABranch: ${env.GIT_BRANCH}%0ACommit: ${env.GIT_COMMIT.take(7)}%0AView run: ${env.BUILD_URL}"
+                        -d text="✅ *worldcup-bet-bot deployed*%0ARepo: ${env.JOB_NAME}%0ABranch: ${env.GIT_BRANCH}%0ACommit: ${(env.GIT_COMMIT ?: 'unknown').take(7)}%0AView run: ${env.BUILD_URL}"
                 """
             }
         }
@@ -92,7 +90,7 @@ EOF
                     curl -s -X POST "https://api.telegram.org/bot\${BOT_TOKEN}/sendMessage" \
                         -d chat_id="\${CHAT_ID}" \
                         -d parse_mode="Markdown" \
-                        -d text="❌ *worldcup-bet-bot deploy failed*%0ARepo: ${env.JOB_NAME}%0ABranch: ${env.GIT_BRANCH}%0ACommit: ${env.GIT_COMMIT.take(7)}%0AView run: ${env.BUILD_URL}"
+                        -d text="❌ *worldcup-bet-bot deploy failed*%0ARepo: ${env.JOB_NAME}%0ABranch: ${env.GIT_BRANCH}%0ACommit: ${(env.GIT_COMMIT ?: 'unknown').take(7)}%0AView run: ${env.BUILD_URL}"
                 """
             }
         }
