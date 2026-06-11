@@ -2,4 +2,3 @@
 credentials/service_account.json
 data/*.db
 *.db
-go.sum
