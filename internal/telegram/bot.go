@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"worldcup-bet-bot/internal/config"
@@ -19,12 +20,19 @@ type Bot struct {
 	cfg          *config.Config
 	sheetsClient *sheets.Client
 	fbClient     *football.Client
+	loc          *time.Location
 }
 
 func NewBot(cfg *config.Config, database *db.DB, sheetsClient *sheets.Client, fbClient *football.Client) (*Bot, error) {
 	api, err := tgbotapi.NewBotAPI(cfg.TelegramToken)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Telegram bot: %w", err)
+	}
+
+	loc, err := time.LoadLocation(cfg.Timezone)
+	if err != nil {
+		log.Printf("warning: invalid timezone %q, falling back to UTC: %v", cfg.Timezone, err)
+		loc = time.UTC
 	}
 
 	log.Printf("Authorized on account %s", api.Self.UserName)
@@ -35,6 +43,7 @@ func NewBot(cfg *config.Config, database *db.DB, sheetsClient *sheets.Client, fb
 		cfg:          cfg,
 		sheetsClient: sheetsClient,
 		fbClient:     fbClient,
+		loc:          loc,
 	}, nil
 }
 
@@ -112,7 +121,7 @@ func (b *Bot) SendToGroup(text string) error {
 
 // SendMatchToGroup sends a match message with betting keyboard to the group
 func (b *Bot) SendMatchToGroup(match *models.Match) error {
-	msg := tgbotapi.NewMessage(b.cfg.GroupChatID, FormatMatchMessage(match))
+	msg := tgbotapi.NewMessage(b.cfg.GroupChatID, FormatMatchMessage(match, b.loc))
 	msg.ReplyMarkup = MatchKeyboard(match)
 	msg.ParseMode = "HTML"
 
@@ -141,7 +150,7 @@ func (b *Bot) SendToChat(chatID int64, text string) error {
 
 // SendMatchToChat sends a match message with betting keyboard to a specific chat ID
 func (b *Bot) SendMatchToChat(chatID int64, match *models.Match) error {
-	msg := tgbotapi.NewMessage(chatID, FormatMatchMessage(match))
+	msg := tgbotapi.NewMessage(chatID, FormatMatchMessage(match, b.loc))
 	msg.ReplyMarkup = MatchKeyboard(match)
 	msg.ParseMode = "HTML"
 

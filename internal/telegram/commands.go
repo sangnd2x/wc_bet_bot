@@ -13,6 +13,10 @@ import (
 
 // cmdStart handles /start command
 func (b *Bot) cmdStart(ctx context.Context, msg *tgbotapi.Message) {
+	log.Printf("Handling /start command from user %d in chat %d", msg.From.ID, msg.Chat.ID)
+	if _, err := b.EnsureUserRegistered(msg.From); err != nil {
+		log.Printf("failed to register user on /start: %v", err)
+	}
 	startMsg := `
 Welcome to World Cup 2026 Betting Bot! 🏆
 
@@ -170,7 +174,7 @@ func (b *Bot) cmdMatches(ctx context.Context, msg *tgbotapi.Message, args string
 	now := time.Now().UTC()
 	for _, match := range matches {
 		// Send with keyboard if kickoff is in the future, text-only if past
-		text := FormatMatchMessage(match)
+		text := FormatMatchMessage(match, b.loc)
 		reply := tgbotapi.NewMessage(msg.Chat.ID, text)
 		reply.ParseMode = "HTML"
 

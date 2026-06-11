@@ -132,7 +132,7 @@ func (b *Bot) handleBetCallback(ctx context.Context, cq *tgbotapi.CallbackQuery)
 	}
 
 	// Build updated message text
-	msgText := FormatMatchMessage(match)
+	msgText := FormatMatchMessage(match, b.loc)
 
 	// Track which user picked which side
 	var user1Bet, user2Bet *models.Bet
@@ -179,7 +179,7 @@ func (b *Bot) handleBetCallback(ctx context.Context, cq *tgbotapi.CallbackQuery)
 				user2TeamName = match.HomeTeam
 			}
 
-			msgText = FormatMatchMessage(match)
+			msgText = FormatMatchMessage(match, b.loc)
 			msgText += fmt.Sprintf("\n✅ %s → %s\n✅ %s → %s", user1Name, user1TeamName, user2Name, user2TeamName)
 
 			// Call sheets.AppendBetRow
@@ -237,7 +237,7 @@ func (b *Bot) handleBetCallback(ctx context.Context, cq *tgbotapi.CallbackQuery)
 				remainingTeam = match.AwayTeam
 			}
 
-			msgText = FormatMatchMessage(match)
+			msgText = FormatMatchMessage(match, b.loc)
 			msgText += fmt.Sprintf("\n✅ %s → %s\n⏳ Waiting for partner to pick %s", betUserName, pickedTeam, remainingTeam)
 
 			// Edit message: keep keyboard
