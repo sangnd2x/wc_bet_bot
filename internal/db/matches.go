@@ -76,7 +76,7 @@ func (db *DB) GetMatchesByDate(date time.Time) ([]*models.Match, error) {
 
 func (db *DB) GetUpcomingMatches(limit int) ([]*models.Match, error) {
 	query := `SELECT id, external_id, home_team, away_team, match_date, kickoff_utc, status, winner, home_score, away_score, last_synced_at
-	          FROM matches WHERE status = 'SCHEDULED' AND kickoff_utc > datetime('now') ORDER BY kickoff_utc ASC LIMIT ?`
+	          FROM matches WHERE status IN ('SCHEDULED', 'TIMED') AND kickoff_utc > datetime('now') ORDER BY kickoff_utc ASC LIMIT ?`
 
 	rows, err := db.Query(query, limit)
 	if err != nil {

@@ -75,8 +75,8 @@ func (b *Bot) handleBetCallback(ctx context.Context, cq *tgbotapi.CallbackQuery)
 		return
 	}
 
-	// Guard 1: If match status != SCHEDULED → answer "Betting is closed for this match."
-	if match.Status != "SCHEDULED" {
+	// Guard 1: Allow betting only on SCHEDULED or TIMED matches
+	if match.Status != "SCHEDULED" && match.Status != "TIMED" {
 		b.answerCallback(cq.ID, "Betting is closed for this match", false)
 		return
 	}

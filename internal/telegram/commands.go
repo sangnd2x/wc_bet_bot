@@ -25,7 +25,7 @@ Available commands:
 /upcoming - Show next 3 upcoming matches
 /matches &lt;DDMMYYYY&gt; - Show matches for a specific date
 /result - Show current leaderboard
-/set_result <match_id> <team> - Set match result (admin only)
+/set_result &lt;match_id&gt; &lt;team&gt; - Set match result (admin only)
 /bets - Show active bets in this group
 /start - Show this help message
 

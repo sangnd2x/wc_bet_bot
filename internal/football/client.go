@@ -100,7 +100,7 @@ func (c *Client) GetActiveMatches(ctx context.Context) ([]models.Match, error) {
 	return allMatches, nil
 }
 
-// GetUpcomingMatches fetches SCHEDULED matches for the next N days
+// GetUpcomingMatches fetches SCHEDULED and TIMED matches for the next N days
 func (c *Client) GetUpcomingMatches(ctx context.Context, days int) ([]models.Match, error) {
 	now := time.Now().UTC()
 	endDate := now.AddDate(0, 0, days)
@@ -108,15 +108,28 @@ func (c *Client) GetUpcomingMatches(ctx context.Context, days int) ([]models.Mat
 	dateFromStr := now.Format("2006-01-02")
 	dateToStr := endDate.Format("2006-01-02")
 
-	url := fmt.Sprintf("%s/competitions/%s/matches?status=SCHEDULED&dateFrom=%s&dateTo=%s&season=%d",
+	scheduledURL := fmt.Sprintf("%s/competitions/%s/matches?status=SCHEDULED&dateFrom=%s&dateTo=%s&season=%d",
+		BaseURL, c.competitionCode, dateFromStr, dateToStr, c.season)
+	timedURL := fmt.Sprintf("%s/competitions/%s/matches?status=TIMED&dateFrom=%s&dateTo=%s&season=%d",
 		BaseURL, c.competitionCode, dateFromStr, dateToStr, c.season)
 
-	matches, err := c.fetchMatches(ctx, url)
+	scheduled, err := c.fetchMatches(ctx, scheduledURL)
+	if err != nil {
+		return nil, err
+	}
+	timed, err := c.fetchMatches(ctx, timedURL)
 	if err != nil {
 		return nil, err
 	}
 
-	return matches, nil
+	all := append(scheduled, timed...)
+	// Sort by kickoff
+	for i := 1; i < len(all); i++ {
+		for j := i; j > 0 && all[j].KickoffUTC.Before(all[j-1].KickoffUTC); j-- {
+			all[j], all[j-1] = all[j-1], all[j]
+		}
+	}
+	return all, nil
 }
 
 // fetchMatches is a helper that fetches and decodes matches from a given URL
