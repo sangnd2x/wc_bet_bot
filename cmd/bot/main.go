@@ -103,20 +103,23 @@ func main() {
 		}
 
 		// Notify all registered groups about match resolution
-		msg := formatMatchResolutionMessage(match)
-		if msg != "" {
+		baseMsg := formatMatchResolutionMessage(match)
+		if baseMsg != "" {
 			groups, err := database.GetAllGroups()
 			if err != nil {
 				log.Printf("error fetching groups for match resolution notification: %v", err)
-			} else if len(groups) == 0 && cfg.GroupChatID != 0 {
-				if err := bot.SendToChat(cfg.GroupChatID, msg); err != nil {
-					log.Printf("error notifying fallback group about match resolution: %v", err)
+				return
+			}
+			if len(groups) == 0 && cfg.GroupChatID != 0 {
+				groups = append(groups, &models.Group{ChatID: cfg.GroupChatID})
+			}
+			for _, group := range groups {
+				msg := baseMsg
+				if match.Status == "FINISHED" {
+					msg += buildBetOutcomeLines(database, match, group.ChatID)
 				}
-			} else {
-				for _, group := range groups {
-					if err := bot.SendToChat(group.ChatID, msg); err != nil {
-						log.Printf("error notifying group %d about match resolution: %v", group.ChatID, err)
-					}
+				if err := bot.SendToChat(group.ChatID, msg); err != nil {
+					log.Printf("error notifying group %d about match resolution: %v", group.ChatID, err)
 				}
 			}
 		}
@@ -192,4 +195,44 @@ func formatTeams(match *models.Match) string {
 
 func formatScore(match *models.Match) string {
 	return fmt.Sprintf("%d - %d", match.HomeScore, match.AwayScore)
+}
+
+// buildBetOutcomeLines appends per-user bet outcome lines for a group
+func buildBetOutcomeLines(database *db.DB, match *models.Match, groupChatID int64) string {
+	bets, err := database.GetBetsForMatchInGroup(match.ID, groupChatID)
+	if err != nil || len(bets) == 0 {
+		return ""
+	}
+
+	lines := "\n"
+	for _, bet := range bets {
+		user, err := database.GetUserByID(bet.UserID)
+		if err != nil || user == nil {
+			continue
+		}
+		name := user.DisplayName
+		if name == "" {
+			name = user.Username
+		}
+		if name == "" {
+			name = "User"
+		}
+		teamName := match.AwayTeam
+		if bet.PickedTeam == "HOME_TEAM" {
+			teamName = match.HomeTeam
+		}
+		var outcomeText string
+		switch bet.Outcome {
+		case "WIN":
+			outcomeText = "✅ " + name + " won this bet"
+		case "LOSS":
+			outcomeText = "❌ " + name + " lost this bet"
+		case "DRAW":
+			outcomeText = "🤝 " + name + " drew (picked " + teamName + ")"
+		default:
+			outcomeText = "⏳ " + name + " (pending)"
+		}
+		lines += outcomeText + "\n"
+	}
+	return lines
 }
