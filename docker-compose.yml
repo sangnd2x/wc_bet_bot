@@ -1,0 +1,13 @@
+version: "3.9"
+services:
+  bot:
+    build: .
+    container_name: worldcup-bet-bot
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data:/data
+      - ./credentials:/credentials:ro
+    environment:
+      - DB_PATH=/data/bets.db
+      - SHEETS_CRED_FILE=/credentials/service_account.json
