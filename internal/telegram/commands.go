@@ -87,7 +87,7 @@ func (b *Bot) cmdUpcomingMatch(ctx context.Context, msg *tgbotapi.Message) {
 	}
 
 	for _, match := range matches {
-		if err := b.SendMatchToChat(msg.Chat.ID, match); err != nil {
+		if err := b.SendMatchToChatForGroup(msg.Chat.ID, match); err != nil {
 			log.Printf("Failed to send match: %v", err)
 		}
 	}
