@@ -8,8 +8,18 @@ import (
 )
 
 func (db *DB) UpsertMatch(m *models.Match) error {
-	query := `INSERT OR REPLACE INTO matches (external_id, home_team, away_team, match_date, kickoff_utc, status, winner, home_score, away_score, last_synced_at)
-	          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`
+	query := `INSERT INTO matches (external_id, home_team, away_team, match_date, kickoff_utc, status, winner, home_score, away_score, last_synced_at)
+	          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+	          ON CONFLICT(external_id) DO UPDATE SET
+	            home_team      = excluded.home_team,
+	            away_team      = excluded.away_team,
+	            match_date     = excluded.match_date,
+	            kickoff_utc    = excluded.kickoff_utc,
+	            status         = excluded.status,
+	            winner         = excluded.winner,
+	            home_score     = excluded.home_score,
+	            away_score     = excluded.away_score,
+	            last_synced_at = CURRENT_TIMESTAMP`
 
 	_, err := db.Exec(query, m.ExternalID, m.HomeTeam, m.AwayTeam, m.MatchDate, m.KickoffUTC, m.Status, m.Winner, m.HomeScore, m.AwayScore)
 	if err != nil {
@@ -89,7 +99,7 @@ func (db *DB) GetUpcomingMatches(limit int) ([]*models.Match, error) {
 
 func (db *DB) GetActiveMatches() ([]*models.Match, error) {
 	query := `SELECT id, external_id, home_team, away_team, match_date, kickoff_utc, status, winner, home_score, away_score, last_synced_at
-	          FROM matches WHERE status IN ('SCHEDULED', 'IN_PLAY', 'PAUSED') ORDER BY kickoff_utc ASC`
+	          FROM matches WHERE status IN ('SCHEDULED', 'TIMED', 'IN_PLAY', 'PAUSED') ORDER BY kickoff_utc ASC`
 
 	rows, err := db.Query(query)
 	if err != nil {
