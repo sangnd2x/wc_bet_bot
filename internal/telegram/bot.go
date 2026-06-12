@@ -162,3 +162,43 @@ func (b *Bot) SendMatchToChat(chatID int64, match *models.Match) error {
 
 	return nil
 }
+
+// SendMatchToChatForGroup sends a match message to a group. If bets already exist
+// for this match in the group, shows who picked what instead of the betting keyboard.
+func (b *Bot) SendMatchToChatForGroup(chatID int64, match *models.Match) error {
+	bets, err := b.db.GetBetsForMatchInGroup(match.ID, chatID)
+	if err != nil {
+		log.Printf("Failed to get bets for match %d in group %d: %v", match.ID, chatID, err)
+	}
+
+	if len(bets) == 0 {
+		return b.SendMatchToChat(chatID, match)
+	}
+
+	// Build summary of who picked what
+	text := FormatMatchMessage(match, b.loc)
+	for _, bet := range bets {
+		user, err := b.db.GetUserByID(bet.UserID)
+		if err != nil || user == nil {
+			continue
+		}
+		name := user.DisplayName
+		if name == "" {
+			name = user.Username
+		}
+		teamName := match.AwayTeam
+		if bet.PickedTeam == "HOME_TEAM" {
+			teamName = match.HomeTeam
+		}
+		text += "\n• " + name + " → " + teamName
+	}
+
+	msg := tgbotapi.NewMessage(chatID, text)
+	msg.ParseMode = "HTML"
+	_, err = b.api.Send(msg)
+	if err != nil {
+		log.Printf("Failed to send match bet summary to chat %d: %v", chatID, err)
+		return err
+	}
+	return nil
+}

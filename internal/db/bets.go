@@ -100,45 +100,41 @@ func (db *DB) UpdateBetSheetsRow(matchID, userID int64, sheetsRow int) error {
 }
 
 func (db *DB) ResolveBets(matchID int64, winner string) error {
-	// Get the match to determine the winner for comparison
-	// First, get all bets for this match and their picked teams
-	query := `SELECT id, picked_team FROM bets WHERE match_id = ? AND resolved_at IS NULL`
-
-	rows, err := db.Query(query, matchID)
+	rows, err := db.Query(`SELECT id, picked_team FROM bets WHERE match_id = ? AND resolved_at IS NULL`, matchID)
 	if err != nil {
 		return fmt.Errorf("failed to query bets to resolve: %w", err)
 	}
-	defer rows.Close()
 
+	type entry struct {
+		id         int64
+		pickedTeam string
+	}
+	var pending []entry
 	for rows.Next() {
-		var betID int64
-		var pickedTeam string
-
-		err := rows.Scan(&betID, &pickedTeam)
-		if err != nil {
+		var e entry
+		if err := rows.Scan(&e.id, &e.pickedTeam); err != nil {
+			rows.Close()
 			return fmt.Errorf("failed to scan bet: %w", err)
 		}
+		pending = append(pending, e)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("error iterating bets: %w", err)
+	}
 
-		// Determine outcome based on picked_team vs winner
+	for _, e := range pending {
 		var outcome string
 		if winner == "DRAW" {
 			outcome = "DRAW"
-		} else if pickedTeam == winner {
+		} else if e.pickedTeam == winner {
 			outcome = "WIN"
 		} else {
 			outcome = "LOSS"
 		}
-
-		// Update the bet
-		updateQuery := `UPDATE bets SET outcome = ?, resolved_at = CURRENT_TIMESTAMP WHERE id = ?`
-		_, err = db.Exec(updateQuery, outcome, betID)
-		if err != nil {
+		if _, err := db.Exec(`UPDATE bets SET outcome = ?, resolved_at = CURRENT_TIMESTAMP WHERE id = ?`, outcome, e.id); err != nil {
 			return fmt.Errorf("failed to update bet outcome: %w", err)
 		}
-	}
-
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("error iterating bets: %w", err)
 	}
 
 	return nil

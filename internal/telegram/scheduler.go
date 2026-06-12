@@ -160,7 +160,7 @@ func (s *Scheduler) dailyBroadcast(ctx context.Context) {
 		}
 
 		for _, match := range matches {
-			if err := s.bot.SendMatchToChat(group.ChatID, match); err != nil {
+			if err := s.bot.SendMatchToChatForGroup(group.ChatID, match); err != nil {
 				log.Printf("Failed to send match to group %d: %v", group.ChatID, err)
 			}
 		}
