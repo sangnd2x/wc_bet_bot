@@ -62,6 +62,31 @@ ALTER TABLE bets ADD COLUMN group_chat_id INTEGER NOT NULL DEFAULT 0;
 
 CREATE INDEX IF NOT EXISTS idx_bets_group ON bets(group_chat_id);`
 
+// migration003SQL changes bets UNIQUE constraint from (match_id, user_id)
+// to (match_id, user_id, group_chat_id) so a user can bet on the same match
+// in different groups independently.
+const migration003SQL = `
+CREATE TABLE bets_new (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    match_id            INTEGER NOT NULL REFERENCES matches(id),
+    user_id             INTEGER NOT NULL REFERENCES users(id),
+    picked_team         TEXT NOT NULL,
+    outcome             TEXT,
+    telegram_message_id INTEGER,
+    sheets_row          INTEGER,
+    created_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
+    resolved_at         DATETIME,
+    group_chat_id       INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(match_id, user_id, group_chat_id)
+);
+INSERT INTO bets_new SELECT id, match_id, user_id, picked_team, outcome, telegram_message_id, sheets_row, created_at, resolved_at, group_chat_id FROM bets;
+DROP TABLE bets;
+ALTER TABLE bets_new RENAME TO bets;
+CREATE INDEX IF NOT EXISTS idx_bets_match ON bets(match_id);
+CREATE INDEX IF NOT EXISTS idx_bets_user  ON bets(user_id);
+CREATE INDEX IF NOT EXISTS idx_bets_group ON bets(group_chat_id);
+`
+
 type DB struct {
 	*sql.DB
 }
@@ -105,6 +130,21 @@ func (db *DB) runMigrations() error {
 
 		// Record the migration
 		_, err = db.Exec("INSERT INTO schema_migrations (version) VALUES (2)")
+		if err != nil {
+			return err
+		}
+	} else if err != nil {
+		return err
+	}
+
+	// Run migration 003 if not yet applied
+	err = db.QueryRow("SELECT version FROM schema_migrations WHERE version = 3").Scan(&version)
+	if err == sql.ErrNoRows {
+		_, err = db.Exec(migration003SQL)
+		if err != nil {
+			return err
+		}
+		_, err = db.Exec("INSERT INTO schema_migrations (version) VALUES (3)")
 		if err != nil {
 			return err
 		}
