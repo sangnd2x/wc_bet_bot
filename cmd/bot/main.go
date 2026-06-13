@@ -85,7 +85,7 @@ func main() {
 		switch match.Status {
 		case "FINISHED":
 			// Resolve bets for this match
-			if err := database.ResolveBets(match.ID, match.Winner); err != nil {
+			if err := database.ResolveBets(match.ID, match.Winner, match.HomeScore, match.AwayScore); err != nil {
 				log.Printf("error resolving bets for match %d: %v", match.ID, err)
 			} else {
 				log.Printf("resolved bets for match %d", match.ID)

@@ -93,20 +93,6 @@ func (b *Bot) handleBetCallback(ctx context.Context, cq *tgbotapi.CallbackQuery)
 		}
 	}
 
-	// Guard 3: If the OTHER user already picked the SAME side → answer "That pick is taken! Pick [other team] instead."
-	if len(existingBets) > 0 {
-		for _, bet := range existingBets {
-			if bet.PickedTeam == side {
-				otherTeam := match.AwayTeam
-				if side == "AWAY_TEAM" {
-					otherTeam = match.HomeTeam
-				}
-				b.answerCallback(cq.ID, fmt.Sprintf("That pick is taken! Pick %s instead.", otherTeam), false)
-				return
-			}
-		}
-	}
-
 	// Insert bet with db.InsertBet (including group chat ID)
 	telegramMsgID := cq.Message.MessageID
 	if err := b.db.InsertBet(match.ID, user.ID, side, telegramMsgID, chatID); err != nil {
@@ -179,45 +165,60 @@ func (b *Bot) handleBetCallback(ctx context.Context, cq *tgbotapi.CallbackQuery)
 				user2TeamName = match.HomeTeam
 			}
 
-			msgText = FormatMatchMessage(match, b.loc)
-			msgText += fmt.Sprintf("\n✅ %s → %s\n✅ %s → %s", user1Name, user1TeamName, user2Name, user2TeamName)
+			if user1Bet.PickedTeam == user2Bet.PickedTeam {
+				// Score-guess mode: both picked same team
+				msgText := FormatMatchMessage(match, b.loc)
+				msgText += fmt.Sprintf("\n✅ %s → %s (waiting for guess...)\n✅ %s → %s (waiting for guess...)", user1Name, user1TeamName, user2Name, user2TeamName)
 
-			// Call sheets.AppendBetRow
-			betRow := sheets.BetRow{
-				MatchDate:    match.MatchDate.Format("02/01/2006"),
-				MatchID:      match.ExternalID,
-				HomeTeam:     match.HomeTeam,
-				AwayTeam:     match.AwayTeam,
-				User1Name:    user1Name,
-				User1Pick:    user1TeamName,
-				User2Name:    user2Name,
-				User2Pick:    user2TeamName,
-				ActualWinner: "",
-				User1Result:  "",
-				User2Result:  "",
-			}
+				// Edit original message to remove keyboard
+				editMsg := tgbotapi.NewEditMessageText(cq.Message.Chat.ID, cq.Message.MessageID, msgText)
+				editMsg.ParseMode = "HTML"
+				b.api.Send(editMsg)
 
-			sheetsRow, err := b.sheetsClient.AppendBetRow(ctx, betRow)
-			if err != nil {
-				log.Printf("Failed to append bet row to sheets: %v", err)
+				// Prompt both users to guess the score
+				prompt := fmt.Sprintf("Both picked %s! Each player guess the score with /guess N-M (e.g. /guess 2-0)", user1TeamName)
+				b.SendToChat(chatID, prompt)
 			} else {
-				// Update both bets' sheets_row
-				if err := b.db.UpdateBetSheetsRow(match.ID, user1Bet.UserID, sheetsRow); err != nil {
-					log.Printf("Failed to update sheets row for user1: %v", err)
+				// Normal mode: different teams picked
+				msgText := FormatMatchMessage(match, b.loc)
+				msgText += fmt.Sprintf("\n✅ %s → %s\n✅ %s → %s", user1Name, user1TeamName, user2Name, user2TeamName)
+
+				// Call sheets.AppendBetRow
+				betRow := sheets.BetRow{
+					MatchDate:    match.MatchDate.Format("02/01/2006"),
+					MatchID:      match.ExternalID,
+					HomeTeam:     match.HomeTeam,
+					AwayTeam:     match.AwayTeam,
+					User1Name:    user1Name,
+					User1Pick:    user1TeamName,
+					User2Name:    user2Name,
+					User2Pick:    user2TeamName,
+					ActualWinner: "",
+					User1Result:  "",
+					User2Result:  "",
 				}
-				if err := b.db.UpdateBetSheetsRow(match.ID, user2Bet.UserID, sheetsRow); err != nil {
-					log.Printf("Failed to update sheets row for user2: %v", err)
+
+				sheetsRow, err := b.sheetsClient.AppendBetRow(ctx, betRow)
+				if err != nil {
+					log.Printf("Failed to append bet row to sheets: %v", err)
+				} else {
+					if err := b.db.UpdateBetSheetsRow(match.ID, user1Bet.UserID, sheetsRow); err != nil {
+						log.Printf("Failed to update sheets row for user1: %v", err)
+					}
+					if err := b.db.UpdateBetSheetsRow(match.ID, user2Bet.UserID, sheetsRow); err != nil {
+						log.Printf("Failed to update sheets row for user2: %v", err)
+					}
 				}
+
+				// Edit message: remove keyboard
+				editMsg := tgbotapi.NewEditMessageText(cq.Message.Chat.ID, cq.Message.MessageID, msgText)
+				editMsg.ParseMode = "HTML"
+				b.api.Send(editMsg)
+
+				// Send "Bet is on!" confirmation message to the group
+				confirmMsg := fmt.Sprintf("🎰 Bet is on!\n%s vs %s\n%s → %s\n%s → %s", match.HomeTeam, match.AwayTeam, user1Name, user1TeamName, user2Name, user2TeamName)
+				b.SendToChat(chatID, confirmMsg)
 			}
-
-			// Edit message: remove keyboard
-			editMsg := tgbotapi.NewEditMessageText(cq.Message.Chat.ID, cq.Message.MessageID, msgText)
-			editMsg.ParseMode = "HTML"
-			b.api.Send(editMsg)
-
-			// Send "Bet is on!" confirmation message to the group
-			confirmMsg := fmt.Sprintf("🎰 Bet is on!\n%s vs %s\n%s → %s\n%s → %s", match.HomeTeam, match.AwayTeam, user1Name, user1TeamName, user2Name, user2TeamName)
-			b.SendToChat(chatID, confirmMsg)
 		}
 	} else if len(updatedBets) == 1 && user1Bet != nil {
 		// If only one user has bet, edit the message to show who has bet and which side remains

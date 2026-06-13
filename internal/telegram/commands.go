@@ -26,6 +26,7 @@ Available commands:
 /matches &lt;DDMMYYYY&gt; - Show matches for a specific date
 /result - Show current leaderboard
 /bets - Show active bets in this group
+/guess N-M - Guess score when both players pick same team
 /start - Show this help message
 
 How to play:
@@ -250,6 +251,56 @@ func (b *Bot) cmdLeaderboard(ctx context.Context, msg *tgbotapi.Message) {
 	b.api.Send(reply)
 }
 
+// cmdGuess handles /guess N-M command for score-guess betting mode
+func (b *Bot) cmdGuess(ctx context.Context, msg *tgbotapi.Message, args string) {
+	args = strings.TrimSpace(args)
+	parts := strings.SplitN(args, "-", 2)
+	if len(parts) != 2 {
+		b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, "Invalid format. Use /guess N-M (e.g. /guess 2-0)"))
+		return
+	}
+	homeGuess, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+	if err != nil || homeGuess < 0 {
+		b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, "Invalid format. Use /guess N-M (e.g. /guess 2-0)"))
+		return
+	}
+	awayGuess, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+	if err != nil || awayGuess < 0 {
+		b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, "Invalid format. Use /guess N-M (e.g. /guess 2-0)"))
+		return
+	}
+
+	user, err := b.EnsureUserRegistered(msg.From)
+	if err != nil {
+		b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, "Failed to register user."))
+		return
+	}
+
+	bet, err := b.db.GetPendingScoreGuessBet(user.ID, msg.Chat.ID)
+	if err != nil {
+		log.Printf("GetPendingScoreGuessBet error: %v", err)
+		b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, "Failed to fetch bet."))
+		return
+	}
+	if bet == nil {
+		b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, "No pending score guess for you."))
+		return
+	}
+	if bet.GuessedHomeScore != nil {
+		b.api.Send(tgbotapi.NewMessage(msg.Chat.ID,
+			fmt.Sprintf("Already guessed %d-%d", *bet.GuessedHomeScore, *bet.GuessedAwayScore)))
+		return
+	}
+
+	ok, err := b.db.SetScoreGuess(bet.MatchID, user.ID, msg.Chat.ID, homeGuess, awayGuess)
+	if err != nil || !ok {
+		b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, "Failed to save guess, try again."))
+		return
+	}
+
+	b.api.Send(tgbotapi.NewMessage(msg.Chat.ID,
+		fmt.Sprintf("Got it! Your guess: %d-%d ✅", homeGuess, awayGuess)))
+}
 
 func min(a, b int) int {
 	if a < b {
@@ -300,7 +351,15 @@ func (b *Bot) cmdBets(ctx context.Context, msg *tgbotapi.Message) {
 			if ab.PickedTeam == "HOME_TEAM" {
 				teamName = ab.HomeTeam
 			}
-			text += fmt.Sprintf("  • %s → %s\n", ab.UserName, teamName)
+			if ab.SameTeamMode {
+				if ab.GuessedHomeScore != nil {
+					text += fmt.Sprintf("  • %s → %s (guess: %d-%d)\n", ab.UserName, teamName, *ab.GuessedHomeScore, *ab.GuessedAwayScore)
+				} else {
+					text += fmt.Sprintf("  • %s → %s (waiting for guess...)\n", ab.UserName, teamName)
+				}
+			} else {
+				text += fmt.Sprintf("  • %s → %s\n", ab.UserName, teamName)
+			}
 		}
 	}
 

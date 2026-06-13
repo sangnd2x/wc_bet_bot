@@ -35,6 +35,8 @@ type Bet struct {
 	CreatedAt        time.Time
 	ResolvedAt       *time.Time
 	GroupChatID      int64
+	GuessedHomeScore *int
+	GuessedAwayScore *int
 }
 
 type UserRecord struct {
