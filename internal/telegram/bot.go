@@ -28,6 +28,7 @@ type Bot struct {
 	sheetsClient *sheets.Client
 	fbClient     *football.Client
 	loc          *time.Location
+	poller       *football.Poller
 	// pendingGuessKB tracks the last "which match?" keyboard message per user+chat
 	// so it can be cleared when the user issues a new /guess.
 	pendingGuessKB   map[pendingGuessKey]int
@@ -57,6 +58,11 @@ func NewBot(cfg *config.Config, database *db.DB, sheetsClient *sheets.Client, fb
 		loc:            loc,
 		pendingGuessKB: make(map[pendingGuessKey]int),
 	}, nil
+}
+
+// SetPoller sets the football poller (called after poller creation in main)
+func (b *Bot) SetPoller(p *football.Poller) {
+	b.poller = p
 }
 
 // clearPendingGuessKB removes the old "which match?" keyboard for a user+chat, if any.
@@ -134,6 +140,8 @@ func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 			b.cmdClearBet(ctx, msg)
 		case "changebet":
 			b.cmdChangeBet(ctx, msg)
+		case "reconcile":
+			b.cmdReconcile(ctx, msg)
 		default:
 			reply := tgbotapi.NewMessage(msg.Chat.ID, "Unknown command: /"+cmd)
 			b.api.Send(reply)

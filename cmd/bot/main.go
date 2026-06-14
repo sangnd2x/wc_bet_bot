@@ -126,6 +126,7 @@ func main() {
 	}
 
 	poller := football.NewPoller(fbClient, database, onMatchResolvedFn)
+	bot.SetPoller(poller)
 
 	// 10. Run initial match sync in background
 	go func() {

@@ -29,6 +29,7 @@ Available commands:
 /guess N-M - Guess score when both players pick same team
 /clearbet - Clear bets for a specific match
 /changebet - Change your team pick or score guess
+/reconcile - Manually trigger reconciliation of finished matches
 /start - Show this help message
 
 How to play:
@@ -505,6 +506,25 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// cmdReconcile manually triggers the reconciliation job to resolve stale finished matches.
+func (b *Bot) cmdReconcile(ctx context.Context, msg *tgbotapi.Message) {
+	log.Printf("Manual reconcile triggered by user %d in chat %d", msg.From.ID, msg.Chat.ID)
+	b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, "🔄 Running reconciliation..."))
+
+	if b.poller == nil {
+		b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, "❌ Poller not available."))
+		return
+	}
+
+	if err := b.poller.Reconcile(ctx); err != nil {
+		log.Printf("manual reconcile error: %v", err)
+		b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, fmt.Sprintf("❌ Reconcile failed: %v", err)))
+		return
+	}
+
+	b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, "✅ Reconciliation complete."))
 }
 
 // cmdBets handles /bets command
