@@ -124,24 +124,38 @@ func (db *DB) SetScoreGuess(matchID, userID, groupChatID int64, homeScore, awayS
 	return rows > 0, nil
 }
 
+// pendingScoreGuessQuery finds bets where the user is in score-guess mode
+// (partner picked same team) and hasn't submitted a guess yet.
+const pendingScoreGuessQuery = `
+	SELECT id, match_id, user_id, picked_team, outcome,
+	       telegram_message_id, sheets_row, created_at, resolved_at,
+	       group_chat_id, guessed_home_score, guessed_away_score
+	FROM bets
+	WHERE user_id = ?
+	  AND group_chat_id = ?
+	  AND resolved_at IS NULL
+	  AND guessed_home_score IS NULL
+	  AND EXISTS (
+	      SELECT 1 FROM bets b2
+	      WHERE b2.match_id = bets.match_id
+	        AND b2.group_chat_id = bets.group_chat_id
+	        AND b2.user_id != bets.user_id
+	        AND b2.picked_team = bets.picked_team
+	  )
+	ORDER BY (SELECT kickoff_utc FROM matches WHERE id = bets.match_id) ASC`
+
+// GetAllPendingScoreGuessBets returns ALL matches where this user needs to submit a score guess.
+func (db *DB) GetAllPendingScoreGuessBets(userID, groupChatID int64) ([]*models.Bet, error) {
+	rows, err := db.Query(pendingScoreGuessQuery, userID, groupChatID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query pending score guess bets: %w", err)
+	}
+	defer rows.Close()
+	return scanBets(rows)
+}
+
 func (db *DB) GetPendingScoreGuessBet(userID, groupChatID int64) (*models.Bet, error) {
-	query := `
-		SELECT id, match_id, user_id, picked_team, outcome,
-		       telegram_message_id, sheets_row, created_at, resolved_at,
-		       group_chat_id, guessed_home_score, guessed_away_score
-		FROM bets
-		WHERE user_id = ?
-		  AND group_chat_id = ?
-		  AND resolved_at IS NULL
-		  AND guessed_home_score IS NULL
-		  AND EXISTS (
-		      SELECT 1 FROM bets b2
-		      WHERE b2.match_id = bets.match_id
-		        AND b2.group_chat_id = bets.group_chat_id
-		        AND b2.user_id != bets.user_id
-		        AND b2.picked_team = bets.picked_team
-		  )
-		LIMIT 1`
+	query := pendingScoreGuessQuery + ` LIMIT 1`
 
 	var bet models.Bet
 	var outcome sql.NullString
@@ -576,4 +590,113 @@ func (db *DB) GetActiveBetsInGroup(groupChatID int64) ([]*ActiveBet, error) {
 		bets = append(bets, &ab)
 	}
 	return bets, rows.Err()
+}
+
+// MyBet represents the current user's own unresolved bet with match details
+type MyBet struct {
+	BetID        int64
+	MatchID      int64
+	HomeTeam     string
+	AwayTeam     string
+	MatchStatus  string
+	PickedTeam   string // "HOME_TEAM" or "AWAY_TEAM"
+	GuessedHome  *int
+	GuessedAway  *int
+	SameTeamMode bool
+}
+
+// GetMyBetsInGroup returns the current user's unresolved bets with match info
+func (db *DB) GetMyBetsInGroup(userID, groupChatID int64) ([]*MyBet, error) {
+	query := `
+		SELECT b.id, b.match_id, m.home_team, m.away_team, m.status,
+		       b.picked_team, b.guessed_home_score, b.guessed_away_score,
+		       (SELECT COUNT(*) FROM bets b2
+		        WHERE b2.match_id = b.match_id
+		          AND b2.group_chat_id = b.group_chat_id
+		          AND b2.picked_team = b.picked_team) > 1 AS same_team_mode
+		FROM bets b
+		JOIN matches m ON b.match_id = m.id
+		WHERE b.user_id = ? AND b.group_chat_id = ? AND b.resolved_at IS NULL
+		  AND m.status NOT IN ('FINISHED', 'CANCELLED', 'POSTPONED')
+		ORDER BY m.kickoff_utc ASC`
+
+	rows, err := db.Query(query, userID, groupChatID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query my bets: %w", err)
+	}
+	defer rows.Close()
+
+	var bets []*MyBet
+	for rows.Next() {
+		var mb MyBet
+		var guessedHome sql.NullInt64
+		var guessedAway sql.NullInt64
+		if err := rows.Scan(&mb.BetID, &mb.MatchID, &mb.HomeTeam, &mb.AwayTeam, &mb.MatchStatus,
+			&mb.PickedTeam, &guessedHome, &guessedAway, &mb.SameTeamMode); err != nil {
+			return nil, fmt.Errorf("failed to scan my bet: %w", err)
+		}
+		if guessedHome.Valid {
+			v := int(guessedHome.Int64)
+			mb.GuessedHome = &v
+		}
+		if guessedAway.Valid {
+			v := int(guessedAway.Int64)
+			mb.GuessedAway = &v
+		}
+		bets = append(bets, &mb)
+	}
+	return bets, rows.Err()
+}
+
+// UpdateBetPick changes the team picked for a bet (only if unresolved)
+func (db *DB) UpdateBetPick(matchID, userID, groupChatID int64, pickedTeam string) error {
+	_, err := db.Exec(
+		`UPDATE bets SET picked_team = ? WHERE match_id = ? AND user_id = ? AND group_chat_id = ? AND resolved_at IS NULL`,
+		pickedTeam, matchID, userID, groupChatID,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to update bet pick: %w", err)
+	}
+	return nil
+}
+
+// ClearGuessesForMatchInGroup clears score guesses for all bets in a match+group (used after team change)
+func (db *DB) ClearGuessesForMatchInGroup(matchID, groupChatID int64) error {
+	_, err := db.Exec(
+		`UPDATE bets SET guessed_home_score = NULL, guessed_away_score = NULL
+		 WHERE match_id = ? AND group_chat_id = ? AND resolved_at IS NULL`,
+		matchID, groupChatID,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to clear guesses: %w", err)
+	}
+	return nil
+}
+
+// GetAllMyScoreGuessBets returns all unresolved score-guess bets for this user (including already-guessed ones).
+// Used by /guess to allow overwriting an existing guess.
+func (db *DB) GetAllMyScoreGuessBets(userID, groupChatID int64) ([]*models.Bet, error) {
+	query := `
+		SELECT id, match_id, user_id, picked_team, outcome,
+		       telegram_message_id, sheets_row, created_at, resolved_at,
+		       group_chat_id, guessed_home_score, guessed_away_score
+		FROM bets
+		WHERE user_id = ?
+		  AND group_chat_id = ?
+		  AND resolved_at IS NULL
+		  AND EXISTS (
+		      SELECT 1 FROM bets b2
+		      WHERE b2.match_id = bets.match_id
+		        AND b2.group_chat_id = bets.group_chat_id
+		        AND b2.user_id != bets.user_id
+		        AND b2.picked_team = bets.picked_team
+		  )
+		ORDER BY (SELECT kickoff_utc FROM matches WHERE id = bets.match_id) ASC`
+
+	rows, err := db.Query(query, userID, groupChatID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query my score guess bets: %w", err)
+	}
+	defer rows.Close()
+	return scanBets(rows)
 }

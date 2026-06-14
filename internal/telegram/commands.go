@@ -28,6 +28,7 @@ Available commands:
 /bets - Show active bets in this group
 /guess N-M - Guess score when both players pick same team
 /clearbet - Clear bets for a specific match
+/changebet - Change your team pick or score guess
 /start - Show this help message
 
 How to play:
@@ -279,9 +280,95 @@ func (b *Bot) cmdClearBet(ctx context.Context, msg *tgbotapi.Message) {
 	b.api.Send(reply)
 }
 
-// cmdGuess handles /guess N-M command for score-guess betting mode
+// cmdChangeBet handles /changebet — shows inline keyboard to change team pick or score guess
+func (b *Bot) cmdChangeBet(ctx context.Context, msg *tgbotapi.Message) {
+	user, err := b.EnsureUserRegistered(msg.From)
+	if err != nil {
+		b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, "Failed to register user."))
+		return
+	}
+
+	myBets, err := b.db.GetMyBetsInGroup(user.ID, msg.Chat.ID)
+	if err != nil {
+		log.Printf("cmdChangeBet: %v", err)
+		b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, "Failed to fetch your bets."))
+		return
+	}
+	if len(myBets) == 0 {
+		b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, "No active bets to change."))
+		return
+	}
+
+	var kbRows [][]tgbotapi.InlineKeyboardButton
+	for _, mb := range myBets {
+		pickedTeamName := mb.AwayTeam
+		if mb.PickedTeam == "HOME_TEAM" {
+			pickedTeamName = mb.HomeTeam
+		}
+		var label string
+		if mb.SameTeamMode {
+			// Score-guess mode — show guess info button
+			if mb.GuessedHome != nil {
+				label = fmt.Sprintf("🎯 %s vs %s → %s (guess: %d-%d)", mb.HomeTeam, mb.AwayTeam, pickedTeamName, *mb.GuessedHome, *mb.GuessedAway)
+			} else {
+				label = fmt.Sprintf("🎯 %s vs %s → %s (no guess yet)", mb.HomeTeam, mb.AwayTeam, pickedTeamName)
+			}
+			data := fmt.Sprintf("changebet_guess_info:%d", mb.MatchID)
+			kbRows = append(kbRows, tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData(label, data),
+			))
+		} else {
+			// Normal mode — allow team change
+			label = fmt.Sprintf("🔄 %s vs %s → %s", mb.HomeTeam, mb.AwayTeam, pickedTeamName)
+			data := fmt.Sprintf("changebet_match:%d", mb.MatchID)
+			kbRows = append(kbRows, tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData(label, data),
+			))
+		}
+	}
+
+	reply := tgbotapi.NewMessage(msg.Chat.ID, "Select bet to change:")
+	reply.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(kbRows...)
+	b.api.Send(reply)
+}
+
+// cmdGuess handles /guess N-M command for score-guess betting mode.
+// If multiple matches need a guess, shows a keyboard so the user picks which match the score applies to.
+// /guess (no args) lists all pending matches.
 func (b *Bot) cmdGuess(ctx context.Context, msg *tgbotapi.Message, args string) {
+	user, err := b.EnsureUserRegistered(msg.From)
+	if err != nil {
+		b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, "Failed to register user."))
+		return
+	}
+
+	pending, err := b.db.GetAllPendingScoreGuessBets(user.ID, msg.Chat.ID)
+	if err != nil {
+		log.Printf("GetAllPendingScoreGuessBets error: %v", err)
+		b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, "Failed to fetch bets."))
+		return
+	}
+
 	args = strings.TrimSpace(args)
+
+	// No args — list pending matches
+	if args == "" {
+		if len(pending) == 0 {
+			b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, "No pending score guesses for you."))
+			return
+		}
+		text := "⏳ Pending score guesses:\n"
+		for _, bet := range pending {
+			if m, err2 := b.db.GetMatchByID(bet.MatchID); err2 == nil && m != nil {
+				text += fmt.Sprintf("• %s vs %s — type /guess N-M (N=%s goals, M=%s goals)\n",
+					m.HomeTeam, m.AwayTeam, m.HomeTeam, m.AwayTeam)
+			}
+		}
+		b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, text))
+		return
+	}
+
+	// Parse score
 	parts := strings.SplitN(args, "-", 2)
 	if len(parts) != 2 {
 		b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, "Invalid format. Use /guess N-M (e.g. /guess 2-0)"))
@@ -298,43 +385,113 @@ func (b *Bot) cmdGuess(ctx context.Context, msg *tgbotapi.Message, args string) 
 		return
 	}
 
-	user, err := b.EnsureUserRegistered(msg.From)
+	// When score args are provided, also include already-guessed bets (allow overwrite)
+	allScoreBets, err := b.db.GetAllMyScoreGuessBets(user.ID, msg.Chat.ID)
 	if err != nil {
-		b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, "Failed to register user."))
+		log.Printf("GetAllMyScoreGuessBets error: %v", err)
+		b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, "Failed to fetch bets."))
 		return
 	}
 
-	bet, err := b.db.GetPendingScoreGuessBet(user.ID, msg.Chat.ID)
-	if err != nil {
-		log.Printf("GetPendingScoreGuessBet error: %v", err)
-		b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, "Failed to fetch bet."))
+	if len(allScoreBets) == 0 {
+		b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, "No score-guess bets for you."))
 		return
 	}
-	if bet == nil {
-		b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, "No pending score guess for you."))
-		return
-	}
-	if bet.GuessedHomeScore != nil {
-		alreadyText := fmt.Sprintf("Already guessed %d-%d", *bet.GuessedHomeScore, *bet.GuessedAwayScore)
-		if m, err2 := b.db.GetMatchByID(bet.MatchID); err2 == nil && m != nil {
-			alreadyText = fmt.Sprintf("Already guessed %s %d-%d %s", m.HomeTeam, *bet.GuessedHomeScore, *bet.GuessedAwayScore, m.AwayTeam)
+
+	// Multiple score bets — ask user to pick which match this score applies to
+	if len(allScoreBets) > 1 {
+		// Clear any previous pending-guess keyboard for this user
+		b.clearPendingGuessKB(msg.Chat.ID, user.ID)
+
+		var kbRows [][]tgbotapi.InlineKeyboardButton
+		for _, bet := range allScoreBets {
+			m, err2 := b.db.GetMatchByID(bet.MatchID)
+			if err2 != nil || m == nil {
+				continue
+			}
+			label := fmt.Sprintf("⚽ %s vs %s (%d-%d)", m.HomeTeam, m.AwayTeam, homeGuess, awayGuess)
+			data := fmt.Sprintf("guess_apply:%d:%d:%d", bet.MatchID, homeGuess, awayGuess)
+			kbRows = append(kbRows, tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData(label, data),
+			))
 		}
-		b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, alreadyText))
+		reply := tgbotapi.NewMessage(msg.Chat.ID,
+			fmt.Sprintf("Score %d-%d applies to which match?", homeGuess, awayGuess))
+		reply.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(kbRows...)
+		sent, err := b.api.Send(reply)
+		if err == nil {
+			b.storePendingGuessKB(msg.Chat.ID, user.ID, sent.MessageID)
+		}
 		return
 	}
 
-	ok, err := b.db.SetScoreGuess(bet.MatchID, user.ID, msg.Chat.ID, homeGuess, awayGuess)
+	// Exactly 1 — apply directly
+	b.applyScoreGuess(msg.Chat.ID, allScoreBets[0].MatchID, user.ID, homeGuess, awayGuess)
+}
+
+// applyScoreGuess validates the guessed score and saves it.
+// The guess must favor the picked team (picked team must win the match).
+func (b *Bot) applyScoreGuess(chatID, matchID, userID int64, homeGuess, awayGuess int) {
+	// Get match info
+	m, err := b.db.GetMatchByID(matchID)
+	if err != nil || m == nil {
+		b.api.Send(tgbotapi.NewMessage(chatID, "Failed to fetch match, try again."))
+		return
+	}
+
+	// Find this user's bet for this match in this group
+	bets, err := b.db.GetBetsForMatchInGroup(matchID, chatID)
+	if err != nil {
+		b.api.Send(tgbotapi.NewMessage(chatID, "Failed to fetch bet, try again."))
+		return
+	}
+	var pickedTeam string
+	for _, bet := range bets {
+		if bet.UserID == userID {
+			pickedTeam = bet.PickedTeam
+			break
+		}
+	}
+	if pickedTeam == "" {
+		b.api.Send(tgbotapi.NewMessage(chatID, "No active score-guess bet found for you in this match."))
+		return
+	}
+
+	// Validate: guess must be in favor of the picked team (picked team must win)
+	pickedTeamName := m.AwayTeam
+	if pickedTeam == "HOME_TEAM" {
+		pickedTeamName = m.HomeTeam
+	}
+	validGuess := false
+	if pickedTeam == "HOME_TEAM" && homeGuess > awayGuess {
+		validGuess = true
+	} else if pickedTeam == "AWAY_TEAM" && awayGuess > homeGuess {
+		validGuess = true
+	}
+	if !validGuess {
+		var exampleGuess string
+		if pickedTeam == "HOME_TEAM" {
+			exampleGuess = fmt.Sprintf("/guess 2-0 means %s 2-0 %s (%s wins)", m.HomeTeam, m.AwayTeam, m.HomeTeam)
+		} else {
+			exampleGuess = fmt.Sprintf("/guess 0-2 means %s 0-2 %s (%s wins)", m.HomeTeam, m.AwayTeam, m.AwayTeam)
+		}
+		errMsg := fmt.Sprintf(
+			"❌ Guess must favor %s (the team you picked).\n\nFormat: /guess N-M where N = %s goals, M = %s goals\nExample: %s\n\nTo change your pick: /changebet",
+			pickedTeamName, m.HomeTeam, m.AwayTeam, exampleGuess,
+		)
+		b.api.Send(tgbotapi.NewMessage(chatID, errMsg))
+		return
+	}
+
+	// Save the guess
+	ok, err := b.db.SetScoreGuess(matchID, userID, chatID, homeGuess, awayGuess)
 	if err != nil || !ok {
-		b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, "Failed to save guess, try again."))
+		b.api.Send(tgbotapi.NewMessage(chatID, "Failed to save guess, try again."))
 		return
 	}
-
-	match, err := b.db.GetMatchByID(bet.MatchID)
-	confirmText := fmt.Sprintf("Got it! Your guess: %d-%d ✅", homeGuess, awayGuess)
-	if err == nil && match != nil {
-		confirmText = fmt.Sprintf("Got it! Your guess: %s %d-%d %s ✅", match.HomeTeam, homeGuess, awayGuess, match.AwayTeam)
-	}
-	b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, confirmText))
+	confirmText := fmt.Sprintf("Got it! Your guess for %s vs %s: %s %d-%d %s ✅",
+		m.HomeTeam, m.AwayTeam, m.HomeTeam, homeGuess, awayGuess, m.AwayTeam)
+	b.api.Send(tgbotapi.NewMessage(chatID, confirmText))
 }
 
 func min(a, b int) int {

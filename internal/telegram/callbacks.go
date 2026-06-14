@@ -28,6 +28,22 @@ func (b *Bot) handleBetCallback(ctx context.Context, cq *tgbotapi.CallbackQuery)
 		b.handleClearBetCallback(cq)
 		return
 	}
+	if strings.HasPrefix(cq.Data, "changebet_match:") {
+		b.handleChangeBetMatchCallback(ctx, cq)
+		return
+	}
+	if strings.HasPrefix(cq.Data, "changebet_apply:") {
+		b.handleChangeBetApplyCallback(ctx, cq)
+		return
+	}
+	if strings.HasPrefix(cq.Data, "changebet_guess_info:") {
+		b.handleChangeBetGuessInfoCallback(cq)
+		return
+	}
+	if strings.HasPrefix(cq.Data, "guess_apply:") {
+		b.handleGuessApplyCallback(ctx, cq)
+		return
+	}
 
 	// Parse callback data — if not "bet:" prefix, ignore
 	if !strings.HasPrefix(cq.Data, "bet:") {
@@ -277,6 +293,36 @@ func (b *Bot) handleBetCallback(ctx context.Context, cq *tgbotapi.CallbackQuery)
 }
 
 // answerCallback sends an answer to a callback query
+func (b *Bot) handleGuessApplyCallback(ctx context.Context, cq *tgbotapi.CallbackQuery) {
+	// Format: guess_apply:<matchID>:<homeScore>:<awayScore>
+	parts := strings.SplitN(cq.Data, ":", 4)
+	if len(parts) != 4 {
+		b.answerCallback(cq.ID, "Invalid data", false)
+		return
+	}
+	matchID, err1 := strconv.ParseInt(parts[1], 10, 64)
+	homeGuess, err2 := strconv.Atoi(parts[2])
+	awayGuess, err3 := strconv.Atoi(parts[3])
+	if err1 != nil || err2 != nil || err3 != nil {
+		b.answerCallback(cq.ID, "Invalid data", false)
+		return
+	}
+
+	user, err := b.EnsureUserRegistered(cq.From)
+	if err != nil {
+		b.answerCallback(cq.ID, "Failed to register user", false)
+		return
+	}
+
+	chatID := cq.Message.Chat.ID
+	b.answerCallback(cq.ID, "Saving guess...", false)
+
+	// Clear tracked keyboard and remove the markup
+	b.clearPendingGuessKB(chatID, user.ID)
+
+	b.applyScoreGuess(chatID, matchID, user.ID, homeGuess, awayGuess)
+}
+
 func (b *Bot) handleClearBetCallback(cq *tgbotapi.CallbackQuery) {
 	parts := strings.SplitN(cq.Data, ":", 2)
 	if len(parts) != 2 {
@@ -318,4 +364,184 @@ func (b *Bot) answerCallback(callbackID string, text string, showAlert bool) {
 	if _, err := b.api.Request(callback); err != nil {
 		log.Printf("Failed to answer callback: %v", err)
 	}
+}
+
+// handleChangeBetMatchCallback shows a team picker for the selected match
+// Callback: changebet_match:<matchID>
+func (b *Bot) handleChangeBetMatchCallback(ctx context.Context, cq *tgbotapi.CallbackQuery) {
+	parts := strings.SplitN(cq.Data, ":", 2)
+	if len(parts) != 2 {
+		b.answerCallback(cq.ID, "Invalid data", false)
+		return
+	}
+	matchID, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil {
+		b.answerCallback(cq.ID, "Invalid match ID", false)
+		return
+	}
+
+	match, err := b.db.GetMatchByID(matchID)
+	if err != nil || match == nil {
+		b.answerCallback(cq.ID, "Match not found", false)
+		return
+	}
+
+	b.answerCallback(cq.ID, "", false)
+
+	kb := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(match.HomeTeam, fmt.Sprintf("changebet_apply:%d:HOME_TEAM", matchID)),
+			tgbotapi.NewInlineKeyboardButtonData(match.AwayTeam, fmt.Sprintf("changebet_apply:%d:AWAY_TEAM", matchID)),
+		),
+	)
+	msg := tgbotapi.NewMessage(cq.Message.Chat.ID, fmt.Sprintf("Change pick for %s vs %s:", match.HomeTeam, match.AwayTeam))
+	msg.ReplyMarkup = kb
+	b.api.Send(msg)
+}
+
+// handleChangeBetApplyCallback applies the team change and resets score guesses
+// Callback: changebet_apply:<matchID>:<HOME_TEAM|AWAY_TEAM>
+func (b *Bot) handleChangeBetApplyCallback(ctx context.Context, cq *tgbotapi.CallbackQuery) {
+	parts := strings.SplitN(cq.Data, ":", 3)
+	if len(parts) != 3 {
+		b.answerCallback(cq.ID, "Invalid data", false)
+		return
+	}
+	matchID, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil {
+		b.answerCallback(cq.ID, "Invalid match ID", false)
+		return
+	}
+	newTeam := parts[2]
+	if newTeam != "HOME_TEAM" && newTeam != "AWAY_TEAM" {
+		b.answerCallback(cq.ID, "Invalid team", false)
+		return
+	}
+
+	user, err := b.EnsureUserRegistered(cq.From)
+	if err != nil {
+		b.answerCallback(cq.ID, "Failed to register user", false)
+		return
+	}
+
+	chatID := cq.Message.Chat.ID
+
+	match, err := b.db.GetMatchByID(matchID)
+	if err != nil || match == nil {
+		b.answerCallback(cq.ID, "Match not found", false)
+		return
+	}
+
+	// Update user's pick
+	if err := b.db.UpdateBetPick(matchID, user.ID, chatID, newTeam); err != nil {
+		log.Printf("handleChangeBetApplyCallback: failed to update pick: %v", err)
+		b.answerCallback(cq.ID, "Failed to update pick", false)
+		return
+	}
+
+	// Clear all score guesses for this match in this group (team changed, guesses no longer valid)
+	if err := b.db.ClearGuessesForMatchInGroup(matchID, chatID); err != nil {
+		log.Printf("handleChangeBetApplyCallback: failed to clear guesses: %v", err)
+	}
+
+	b.answerCallback(cq.ID, "Pick updated ✅", true)
+
+	// Reload bets and determine new state
+	updatedBets, err := b.db.GetBetsForMatchInGroup(matchID, chatID)
+	if err != nil {
+		log.Printf("handleChangeBetApplyCallback: failed to reload bets: %v", err)
+		return
+	}
+
+	newTeamName := match.AwayTeam
+	if newTeam == "HOME_TEAM" {
+		newTeamName = match.HomeTeam
+	}
+
+	// Check if both bets now point to the same team (score-guess mode) or different
+	if len(updatedBets) >= 2 {
+		bet1 := updatedBets[0]
+		bet2 := updatedBets[1]
+
+		u1, _ := b.db.GetUserByID(bet1.UserID)
+		u2, _ := b.db.GetUserByID(bet2.UserID)
+		u1Name := "User"
+		u2Name := "User"
+		if u1 != nil {
+			u1Name = u1.DisplayName
+			if u1Name == "" {
+				u1Name = u1.Username
+			}
+			if u1Name == "" {
+				u1Name = "User"
+			}
+		}
+		if u2 != nil {
+			u2Name = u2.DisplayName
+			if u2Name == "" {
+				u2Name = u2.Username
+			}
+			if u2Name == "" {
+				u2Name = "User"
+			}
+		}
+		u1TeamName := match.AwayTeam
+		if bet1.PickedTeam == "HOME_TEAM" {
+			u1TeamName = match.HomeTeam
+		}
+		u2TeamName := match.AwayTeam
+		if bet2.PickedTeam == "HOME_TEAM" {
+			u2TeamName = match.HomeTeam
+		}
+
+		msgText := FormatMatchMessage(match, b.loc)
+		if bet1.PickedTeam == bet2.PickedTeam {
+			// Same team — score-guess mode
+			msgText += fmt.Sprintf("\n✅ %s → %s (waiting for guess...)\n✅ %s → %s (waiting for guess...)", u1Name, u1TeamName, u2Name, u2TeamName)
+			editMsg := tgbotapi.NewEditMessageText(cq.Message.Chat.ID, cq.Message.MessageID, msgText)
+			editMsg.ParseMode = "HTML"
+			b.api.Send(editMsg)
+			prompt := fmt.Sprintf("Pick changed! Both now picked %s.\nGuess the final score with /guess N-M\n• N = %s goals, M = %s goals\n• e.g. /guess 2-0 means %s 2-0 %s",
+				u1TeamName, match.HomeTeam, match.AwayTeam, match.HomeTeam, match.AwayTeam)
+			b.SendToChat(chatID, prompt)
+		} else {
+			// Different teams — normal mode
+			msgText += fmt.Sprintf("\n✅ %s → %s\n✅ %s → %s", u1Name, u1TeamName, u2Name, u2TeamName)
+			editMsg := tgbotapi.NewEditMessageText(cq.Message.Chat.ID, cq.Message.MessageID, msgText)
+			editMsg.ParseMode = "HTML"
+			b.api.Send(editMsg)
+			confirmMsg := fmt.Sprintf("🔄 Bet updated!\n%s vs %s\n%s → %s\n%s → %s",
+				match.HomeTeam, match.AwayTeam, u1Name, u1TeamName, u2Name, u2TeamName)
+			b.SendToChat(chatID, confirmMsg)
+		}
+	} else {
+		// Only 1 bet remaining — show confirmation
+		b.SendToChat(chatID, fmt.Sprintf("✅ Pick changed to %s for %s vs %s", newTeamName, match.HomeTeam, match.AwayTeam))
+	}
+}
+
+// handleChangeBetGuessInfoCallback informs user to use /guess to change their score guess
+// Callback: changebet_guess_info:<matchID>
+func (b *Bot) handleChangeBetGuessInfoCallback(cq *tgbotapi.CallbackQuery) {
+	parts := strings.SplitN(cq.Data, ":", 2)
+	if len(parts) != 2 {
+		b.answerCallback(cq.ID, "Invalid data", false)
+		return
+	}
+	matchID, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil {
+		b.answerCallback(cq.ID, "Invalid match ID", false)
+		return
+	}
+
+	match, err := b.db.GetMatchByID(matchID)
+	if err != nil || match == nil {
+		b.answerCallback(cq.ID, "Match not found", false)
+		return
+	}
+
+	b.answerCallback(cq.ID, "", false)
+	msg := fmt.Sprintf("To update your score guess for %s vs %s, use:\n/guess N-M\n• N = %s goals, M = %s goals\n• e.g. /guess 2-0 means %s 2-0 %s",
+		match.HomeTeam, match.AwayTeam, match.HomeTeam, match.AwayTeam, match.HomeTeam, match.AwayTeam)
+	b.SendToChat(cq.Message.Chat.ID, msg)
 }

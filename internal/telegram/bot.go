@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -14,6 +15,12 @@ import (
 	"worldcup-bet-bot/internal/sheets"
 )
 
+// pendingGuessKey identifies a user's pending guess keyboard in a specific chat.
+type pendingGuessKey struct {
+	userID int64
+	chatID int64
+}
+
 type Bot struct {
 	api          *tgbotapi.BotAPI
 	db           *db.DB
@@ -21,6 +28,10 @@ type Bot struct {
 	sheetsClient *sheets.Client
 	fbClient     *football.Client
 	loc          *time.Location
+	// pendingGuessKB tracks the last "which match?" keyboard message per user+chat
+	// so it can be cleared when the user issues a new /guess.
+	pendingGuessKB   map[pendingGuessKey]int
+	pendingGuessKBMu sync.Mutex
 }
 
 func NewBot(cfg *config.Config, database *db.DB, sheetsClient *sheets.Client, fbClient *football.Client) (*Bot, error) {
@@ -38,13 +49,36 @@ func NewBot(cfg *config.Config, database *db.DB, sheetsClient *sheets.Client, fb
 	log.Printf("Authorized on account %s", api.Self.UserName)
 
 	return &Bot{
-		api:          api,
-		db:           database,
-		cfg:          cfg,
-		sheetsClient: sheetsClient,
-		fbClient:     fbClient,
-		loc:          loc,
+		api:            api,
+		db:             database,
+		cfg:            cfg,
+		sheetsClient:   sheetsClient,
+		fbClient:       fbClient,
+		loc:            loc,
+		pendingGuessKB: make(map[pendingGuessKey]int),
 	}, nil
+}
+
+// clearPendingGuessKB removes the old "which match?" keyboard for a user+chat, if any.
+func (b *Bot) clearPendingGuessKB(chatID, userID int64) {
+	k := pendingGuessKey{userID, chatID}
+	b.pendingGuessKBMu.Lock()
+	msgID, exists := b.pendingGuessKB[k]
+	delete(b.pendingGuessKB, k)
+	b.pendingGuessKBMu.Unlock()
+
+	if exists {
+		edit := tgbotapi.NewEditMessageReplyMarkup(chatID, msgID, tgbotapi.InlineKeyboardMarkup{})
+		b.api.Send(edit)
+	}
+}
+
+// storePendingGuessKB records the message ID of a pending guess keyboard.
+func (b *Bot) storePendingGuessKB(chatID, userID int64, msgID int) {
+	k := pendingGuessKey{userID, chatID}
+	b.pendingGuessKBMu.Lock()
+	b.pendingGuessKB[k] = msgID
+	b.pendingGuessKBMu.Unlock()
 }
 
 // Start begins long-polling for updates. Blocks until ctx is cancelled.
@@ -98,6 +132,8 @@ func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 			b.cmdGuess(ctx, msg, msg.CommandArguments())
 		case "clearbet":
 			b.cmdClearBet(ctx, msg)
+		case "changebet":
+			b.cmdChangeBet(ctx, msg)
 		default:
 			reply := tgbotapi.NewMessage(msg.Chat.ID, "Unknown command: /"+cmd)
 			b.api.Send(reply)
