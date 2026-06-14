@@ -72,6 +72,18 @@ func (s *Scheduler) Start() error {
 		return fmt.Errorf("failed to add match sync job: %w", err)
 	}
 
+	// Job 4: Reconciliation (every hour) — silently resolves stale finished matches
+	_, err = cronWithTZ.AddFunc("0 * * * *", func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		if err := s.poller.Reconcile(ctx); err != nil {
+			log.Printf("Reconcile error: %v", err)
+		}
+	})
+	if err != nil {
+		return fmt.Errorf("failed to add reconciliation job: %w", err)
+	}
+
 	s.cron = cronWithTZ
 	s.cron.Start()
 

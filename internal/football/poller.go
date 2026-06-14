@@ -92,6 +92,70 @@ func (p *Poller) Poll(ctx context.Context) error {
 	return nil
 }
 
+// Reconcile finds matches that should be finished (kickoff > 2h ago, still non-terminal)
+// and silently resolves their bets without sending any Telegram announcements.
+// This catches matches the regular poller missed due to API failures or status edge cases.
+func (p *Poller) Reconcile(ctx context.Context) error {
+	log.Println("Starting reconciliation")
+
+	cutoff := time.Now().UTC().Add(-2 * time.Hour)
+	stale, err := p.db.GetStaleMatches(cutoff)
+	if err != nil {
+		return fmt.Errorf("failed to get stale matches: %w", err)
+	}
+
+	if len(stale) == 0 {
+		log.Println("Reconciliation: no stale matches")
+		return nil
+	}
+
+	for _, match := range stale {
+		log.Printf("Reconcile: checking stale match %d (%s vs %s, status: %s)",
+			match.ExternalID, match.HomeTeam, match.AwayTeam, match.Status)
+
+		apiMatch, err := p.client.GetMatchByExternalID(ctx, match.ExternalID)
+		if err != nil {
+			log.Printf("Reconcile: failed to fetch match %d from API: %v", match.ExternalID, err)
+			continue
+		}
+
+		if apiMatch.Status != "FINISHED" && apiMatch.Status != "CANCELLED" && apiMatch.Status != "POSTPONED" {
+			log.Printf("Reconcile: match %d still not terminal (status: %s), skipping", match.ExternalID, apiMatch.Status)
+			continue
+		}
+
+		log.Printf("Reconcile: match %d resolved as %s", match.ExternalID, apiMatch.Status)
+
+		match.Status = apiMatch.Status
+		if apiMatch.Status == "FINISHED" {
+			match.HomeScore = apiMatch.HomeScore
+			match.AwayScore = apiMatch.AwayScore
+			match.Winner = apiMatch.Winner
+		}
+
+		if err := p.db.UpsertMatch(match); err != nil {
+			log.Printf("Reconcile: failed to update match %d: %v", match.ExternalID, err)
+			continue
+		}
+
+		if apiMatch.Status == "FINISHED" {
+			if err := p.db.ResolveBets(match.ID, match.Winner, match.HomeScore, match.AwayScore); err != nil {
+				log.Printf("Reconcile: failed to resolve bets for match %d: %v", match.ID, err)
+			} else {
+				log.Printf("Reconcile: silently resolved bets for match %d (%s vs %s)",
+					match.ID, match.HomeTeam, match.AwayTeam)
+			}
+		} else if apiMatch.Status == "CANCELLED" {
+			if err := p.db.DeleteBetsForMatch(match.ID); err != nil {
+				log.Printf("Reconcile: failed to delete bets for cancelled match %d: %v", match.ID, err)
+			}
+		}
+	}
+
+	log.Println("Reconciliation completed")
+	return nil
+}
+
 // SyncMatches fetches and upserts upcoming matches into DB
 func (p *Poller) SyncMatches(ctx context.Context) error {
 	log.Println("Starting match sync")

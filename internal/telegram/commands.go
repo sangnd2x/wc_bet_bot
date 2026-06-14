@@ -27,6 +27,7 @@ Available commands:
 /result - Show current leaderboard
 /bets - Show active bets in this group
 /guess N-M - Guess score when both players pick same team
+/clearbet - Clear bets for a specific match
 /start - Show this help message
 
 How to play:

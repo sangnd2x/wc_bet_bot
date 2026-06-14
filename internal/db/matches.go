@@ -102,6 +102,25 @@ func (db *DB) GetMatchByExternalID(externalID int) (*models.Match, error) {
 	return &match, nil
 }
 
+// GetStaleMatches returns matches whose kickoff is older than the given cutoff
+// but are still in a non-terminal status (not FINISHED/CANCELLED/POSTPONED).
+// Used by the reconciliation job to catch matches missed by the regular poller.
+func (db *DB) GetStaleMatches(cutoff time.Time) ([]*models.Match, error) {
+	query := `SELECT id, external_id, home_team, away_team, match_date, kickoff_utc, status, winner, home_score, away_score, last_synced_at
+	          FROM matches
+	          WHERE kickoff_utc < ?
+	            AND status NOT IN ('FINISHED', 'CANCELLED', 'POSTPONED')
+	          ORDER BY kickoff_utc ASC`
+
+	rows, err := db.Query(query, cutoff)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query stale matches: %w", err)
+	}
+	defer rows.Close()
+
+	return scanMatches(rows)
+}
+
 func (db *DB) GetMatchesByDate(date time.Time) ([]*models.Match, error) {
 	query := `SELECT id, external_id, home_team, away_team, match_date, kickoff_utc, status, winner, home_score, away_score, last_synced_at
 	          FROM matches WHERE DATE(match_date) = DATE(?) ORDER BY kickoff_utc ASC`

@@ -441,6 +441,7 @@ func (db *DB) GetActiveBetMatchesInGroup(groupChatID int64) ([]MatchSummary, err
 		FROM bets b
 		JOIN matches m ON b.match_id = m.id
 		WHERE b.group_chat_id = ? AND b.resolved_at IS NULL
+		  AND m.status NOT IN ('FINISHED', 'CANCELLED', 'POSTPONED')
 		ORDER BY m.kickoff_utc ASC`
 
 	rows, err := db.Query(query, groupChatID)
