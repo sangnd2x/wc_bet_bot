@@ -106,7 +106,6 @@ func (p *Poller) Reconcile(ctx context.Context) error {
 
 	if len(stale) == 0 {
 		log.Println("Reconciliation: no stale matches")
-		return nil
 	}
 
 	for _, match := range stale {
