@@ -320,7 +320,27 @@ func (b *Bot) handleGuessApplyCallback(ctx context.Context, cq *tgbotapi.Callbac
 	// Clear tracked keyboard and remove the markup
 	b.clearPendingGuessKB(chatID, user.ID)
 
-	b.applyScoreGuess(chatID, matchID, user.ID, homeGuess, awayGuess)
+	ok := b.applyScoreGuess(chatID, matchID, user.ID, homeGuess, awayGuess)
+	if !ok {
+		return
+	}
+
+	// After saving, check if any score-guess bets still need a guess
+	remaining, err := b.db.GetAllPendingScoreGuessBets(user.ID, chatID)
+	if err != nil {
+		log.Printf("handleGuessApplyCallback: failed to check remaining: %v", err)
+		return
+	}
+	if len(remaining) > 0 {
+		text := fmt.Sprintf("⏳ You still have %d match(es) waiting for a score guess:\n", len(remaining))
+		for _, rem := range remaining {
+			if m, err2 := b.db.GetMatchByID(rem.MatchID); err2 == nil && m != nil {
+				text += fmt.Sprintf("• %s vs %s\n", m.HomeTeam, m.AwayTeam)
+			}
+		}
+		text += "\nType /guess N-M for the next match."
+		b.SendToChat(chatID, text)
+	}
 }
 
 func (b *Bot) handleClearBetCallback(cq *tgbotapi.CallbackQuery) {

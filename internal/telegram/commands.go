@@ -409,7 +409,12 @@ func (b *Bot) cmdGuess(ctx context.Context, msg *tgbotapi.Message, args string) 
 			if err2 != nil || m == nil {
 				continue
 			}
-			label := fmt.Sprintf("⚽ %s vs %s (%d-%d)", m.HomeTeam, m.AwayTeam, homeGuess, awayGuess)
+			var label string
+			if bet.GuessedHomeScore != nil {
+				label = fmt.Sprintf("✅ %s vs %s (current: %d-%d) → apply %d-%d?", m.HomeTeam, m.AwayTeam, *bet.GuessedHomeScore, *bet.GuessedAwayScore, homeGuess, awayGuess)
+			} else {
+				label = fmt.Sprintf("⏳ %s vs %s → apply %d-%d", m.HomeTeam, m.AwayTeam, homeGuess, awayGuess)
+			}
 			data := fmt.Sprintf("guess_apply:%d:%d:%d", bet.MatchID, homeGuess, awayGuess)
 			kbRows = append(kbRows, tgbotapi.NewInlineKeyboardRow(
 				tgbotapi.NewInlineKeyboardButtonData(label, data),
@@ -426,24 +431,24 @@ func (b *Bot) cmdGuess(ctx context.Context, msg *tgbotapi.Message, args string) 
 	}
 
 	// Exactly 1 — apply directly
-	b.applyScoreGuess(msg.Chat.ID, allScoreBets[0].MatchID, user.ID, homeGuess, awayGuess)
+	_ = b.applyScoreGuess(msg.Chat.ID, allScoreBets[0].MatchID, user.ID, homeGuess, awayGuess)
 }
 
 // applyScoreGuess validates the guessed score and saves it.
 // The guess must favor the picked team (picked team must win the match).
-func (b *Bot) applyScoreGuess(chatID, matchID, userID int64, homeGuess, awayGuess int) {
+func (b *Bot) applyScoreGuess(chatID, matchID, userID int64, homeGuess, awayGuess int) bool {
 	// Get match info
 	m, err := b.db.GetMatchByID(matchID)
 	if err != nil || m == nil {
 		b.api.Send(tgbotapi.NewMessage(chatID, "Failed to fetch match, try again."))
-		return
+		return false
 	}
 
 	// Find this user's bet for this match in this group
 	bets, err := b.db.GetBetsForMatchInGroup(matchID, chatID)
 	if err != nil {
 		b.api.Send(tgbotapi.NewMessage(chatID, "Failed to fetch bet, try again."))
-		return
+		return false
 	}
 	var pickedTeam string
 	for _, bet := range bets {
@@ -454,7 +459,7 @@ func (b *Bot) applyScoreGuess(chatID, matchID, userID int64, homeGuess, awayGues
 	}
 	if pickedTeam == "" {
 		b.api.Send(tgbotapi.NewMessage(chatID, "No active score-guess bet found for you in this match."))
-		return
+		return false
 	}
 
 	// Validate: guess must be in favor of the picked team (picked team must win)
@@ -480,18 +485,19 @@ func (b *Bot) applyScoreGuess(chatID, matchID, userID int64, homeGuess, awayGues
 			pickedTeamName, m.HomeTeam, m.AwayTeam, exampleGuess,
 		)
 		b.api.Send(tgbotapi.NewMessage(chatID, errMsg))
-		return
+		return false
 	}
 
 	// Save the guess
 	ok, err := b.db.SetScoreGuess(matchID, userID, chatID, homeGuess, awayGuess)
 	if err != nil || !ok {
 		b.api.Send(tgbotapi.NewMessage(chatID, "Failed to save guess, try again."))
-		return
+		return false
 	}
 	confirmText := fmt.Sprintf("Got it! Your guess for %s vs %s: %s %d-%d %s ✅",
 		m.HomeTeam, m.AwayTeam, m.HomeTeam, homeGuess, awayGuess, m.AwayTeam)
 	b.api.Send(tgbotapi.NewMessage(chatID, confirmText))
+	return true
 }
 
 func min(a, b int) int {

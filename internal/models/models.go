@@ -22,6 +22,7 @@ type Match struct {
 	HomeScore  int
 	AwayScore  int
 	LastSyncedAt time.Time
+	NotifiedPreMatch bool
 }
 
 type Bet struct {

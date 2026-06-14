@@ -84,6 +84,16 @@ func (s *Scheduler) Start() error {
 		return fmt.Errorf("failed to add reconciliation job: %w", err)
 	}
 
+	// Job 5: 30-min pre-match reminder (every 5 minutes)
+	_, err = cronWithTZ.AddFunc("*/5 * * * *", func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		s.preMatchReminder(ctx)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to add pre-match reminder job: %w", err)
+	}
+
 	s.cron = cronWithTZ
 	s.cron.Start()
 
@@ -185,4 +195,85 @@ func (s *Scheduler) SetMatchResolvedCallback(callback func(match *models.Match))
 	// Note: The poller is created with a callback in main, so we don't need to
 	// set it here. But this is a helper for external use if needed.
 	log.Println("Match resolved callback set (via poller initialization)")
+}
+
+// preMatchReminder checks for matches starting within 30 minutes and sends
+// per-group notifications based on current bet state.
+func (s *Scheduler) preMatchReminder(ctx context.Context) {
+	matches, err := s.bot.db.GetMatchesStartingIn30Min()
+	if err != nil {
+		log.Printf("preMatchReminder: failed to get matches: %v", err)
+		return
+	}
+	if len(matches) == 0 {
+		return
+	}
+
+	groups, err := s.bot.db.GetAllGroups()
+	if err != nil {
+		log.Printf("preMatchReminder: failed to get groups: %v", err)
+		return
+	}
+	if len(groups) == 0 && s.bot.cfg.GroupChatID != 0 {
+		groups = append(groups, &models.Group{
+			ChatID:    s.bot.cfg.GroupChatID,
+			Title:     "Default Group",
+			CreatedAt: time.Now(),
+		})
+	}
+	if len(groups) == 0 {
+		return
+	}
+
+	for _, match := range matches {
+		for _, group := range groups {
+			bets, err := s.bot.db.GetBetsForMatchInGroup(match.ID, group.ChatID)
+			if err != nil {
+				log.Printf("preMatchReminder: get bets err match %d group %d: %v", match.ID, group.ChatID, err)
+				continue
+			}
+
+			switch len(bets) {
+			case 0:
+				// No bets — send reminder with betting keyboard
+				header := fmt.Sprintf("⚠️ <b>%s vs %s</b> starts in ~30 min!\nNo bets placed yet. Bet now or it counts as a draw:",
+					match.HomeTeam, match.AwayTeam)
+				s.bot.SendToChat(group.ChatID, header)
+				s.bot.SendMatchToChat(group.ChatID, match)
+
+			case 1:
+				// One bet placed — remind partner
+				bet := bets[0]
+				bettor, err := s.bot.db.GetUserByID(bet.UserID)
+				if err != nil || bettor == nil {
+					continue
+				}
+				bettorName := bettor.DisplayName
+				if bettorName == "" {
+					bettorName = bettor.Username
+				}
+				if bettorName == "" {
+					bettorName = "Someone"
+				}
+				teamName := match.AwayTeam
+				if bet.PickedTeam == "HOME_TEAM" {
+					teamName = match.HomeTeam
+				}
+				text := fmt.Sprintf(
+					"⚠️ <b>%s vs %s</b> starts in ~30 min!\n<b>%s</b> picked <b>%s</b> but partner hasn't bet yet!\nBet now — if no partner bets, result depends on <b>%s</b>'s pick!",
+					match.HomeTeam, match.AwayTeam, bettorName, teamName, bettorName,
+				)
+				s.bot.SendToChat(group.ChatID, text)
+				s.bot.SendMatchToChat(group.ChatID, match)
+
+			default:
+				// 2+ bets — bet is on, no notification needed
+			}
+		}
+
+		// Mark notified so this match isn't re-processed on the next 5-min tick
+		if err := s.bot.db.MarkMatchNotified(match.ID); err != nil {
+			log.Printf("preMatchReminder: failed to mark match %d notified: %v", match.ID, err)
+		}
+	}
 }

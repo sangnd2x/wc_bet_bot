@@ -64,6 +64,7 @@ CREATE INDEX IF NOT EXISTS idx_bets_group ON bets(group_chat_id);`
 
 const migration004aSQL = `ALTER TABLE bets ADD COLUMN guessed_home_score INTEGER;`
 const migration004bSQL = `ALTER TABLE bets ADD COLUMN guessed_away_score INTEGER;`
+const migration005SQL = `ALTER TABLE matches ADD COLUMN notified_30min INTEGER NOT NULL DEFAULT 0;`
 
 // migration003SQL changes bets UNIQUE constraint from (match_id, user_id)
 // to (match_id, user_id, group_chat_id) so a user can bet on the same match
@@ -168,6 +169,18 @@ func (db *DB) runMigrations() error {
 		}
 		_, err = db.Exec("INSERT INTO schema_migrations (version) VALUES (4)")
 		if err != nil {
+			return err
+		}
+	} else if err != nil {
+		return err
+	}
+
+	err = db.QueryRow("SELECT version FROM schema_migrations WHERE version = 5").Scan(&version)
+	if err == sql.ErrNoRows {
+		if _, err = db.Exec(migration005SQL); err != nil {
+			return err
+		}
+		if _, err = db.Exec("INSERT INTO schema_migrations (version) VALUES (5)"); err != nil {
 			return err
 		}
 	} else if err != nil {

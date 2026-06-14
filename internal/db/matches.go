@@ -30,17 +30,18 @@ func (db *DB) UpsertMatch(m *models.Match) error {
 }
 
 func (db *DB) GetMatchByID(id int64) (*models.Match, error) {
-	query := `SELECT id, external_id, home_team, away_team, match_date, kickoff_utc, status, winner, home_score, away_score, last_synced_at FROM matches WHERE id = ?`
+	query := `SELECT id, external_id, home_team, away_team, match_date, kickoff_utc, status, winner, home_score, away_score, last_synced_at, notified_30min FROM matches WHERE id = ?`
 
 	var match models.Match
 	var winner sql.NullString
 	var homeScore sql.NullInt64
 	var awayScore sql.NullInt64
+	var notified int
 
 	err := db.QueryRow(query, id).Scan(
 		&match.ID, &match.ExternalID, &match.HomeTeam, &match.AwayTeam,
 		&match.MatchDate, &match.KickoffUTC, &match.Status,
-		&winner, &homeScore, &awayScore, &match.LastSyncedAt,
+		&winner, &homeScore, &awayScore, &match.LastSyncedAt, &notified,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -57,16 +58,18 @@ func (db *DB) GetMatchByID(id int64) (*models.Match, error) {
 	if awayScore.Valid {
 		match.AwayScore = int(awayScore.Int64)
 	}
+	match.NotifiedPreMatch = notified != 0
 	return &match, nil
 }
 
 func (db *DB) GetMatchByExternalID(externalID int) (*models.Match, error) {
-	query := `SELECT id, external_id, home_team, away_team, match_date, kickoff_utc, status, winner, home_score, away_score, last_synced_at FROM matches WHERE external_id = ?`
+	query := `SELECT id, external_id, home_team, away_team, match_date, kickoff_utc, status, winner, home_score, away_score, last_synced_at, notified_30min FROM matches WHERE external_id = ?`
 
 	var match models.Match
 	var winner sql.NullString
 	var homeScore sql.NullInt64
 	var awayScore sql.NullInt64
+	var notified int
 
 	err := db.QueryRow(query, externalID).Scan(
 		&match.ID,
@@ -80,6 +83,7 @@ func (db *DB) GetMatchByExternalID(externalID int) (*models.Match, error) {
 		&homeScore,
 		&awayScore,
 		&match.LastSyncedAt,
+		&notified,
 	)
 
 	if err == sql.ErrNoRows {
@@ -98,6 +102,7 @@ func (db *DB) GetMatchByExternalID(externalID int) (*models.Match, error) {
 	if awayScore.Valid {
 		match.AwayScore = int(awayScore.Int64)
 	}
+	match.NotifiedPreMatch = notified != 0
 
 	return &match, nil
 }
@@ -106,7 +111,7 @@ func (db *DB) GetMatchByExternalID(externalID int) (*models.Match, error) {
 // but are still in a non-terminal status (not FINISHED/CANCELLED/POSTPONED).
 // Used by the reconciliation job to catch matches missed by the regular poller.
 func (db *DB) GetStaleMatches(cutoff time.Time) ([]*models.Match, error) {
-	query := `SELECT id, external_id, home_team, away_team, match_date, kickoff_utc, status, winner, home_score, away_score, last_synced_at
+	query := `SELECT id, external_id, home_team, away_team, match_date, kickoff_utc, status, winner, home_score, away_score, last_synced_at, notified_30min
 	          FROM matches
 	          WHERE kickoff_utc < ?
 	            AND status NOT IN ('FINISHED', 'CANCELLED', 'POSTPONED')
@@ -122,7 +127,7 @@ func (db *DB) GetStaleMatches(cutoff time.Time) ([]*models.Match, error) {
 }
 
 func (db *DB) GetMatchesByDate(date time.Time) ([]*models.Match, error) {
-	query := `SELECT id, external_id, home_team, away_team, match_date, kickoff_utc, status, winner, home_score, away_score, last_synced_at
+	query := `SELECT id, external_id, home_team, away_team, match_date, kickoff_utc, status, winner, home_score, away_score, last_synced_at, notified_30min
 	          FROM matches WHERE DATE(match_date) = DATE(?) ORDER BY kickoff_utc ASC`
 
 	rows, err := db.Query(query, date)
@@ -135,7 +140,7 @@ func (db *DB) GetMatchesByDate(date time.Time) ([]*models.Match, error) {
 }
 
 func (db *DB) GetUpcomingMatches(limit int) ([]*models.Match, error) {
-	query := `SELECT id, external_id, home_team, away_team, match_date, kickoff_utc, status, winner, home_score, away_score, last_synced_at
+	query := `SELECT id, external_id, home_team, away_team, match_date, kickoff_utc, status, winner, home_score, away_score, last_synced_at, notified_30min
 	          FROM matches WHERE status IN ('SCHEDULED', 'TIMED') AND kickoff_utc > datetime('now') ORDER BY kickoff_utc ASC LIMIT ?`
 
 	rows, err := db.Query(query, limit)
@@ -148,7 +153,7 @@ func (db *DB) GetUpcomingMatches(limit int) ([]*models.Match, error) {
 }
 
 func (db *DB) GetActiveMatches() ([]*models.Match, error) {
-	query := `SELECT id, external_id, home_team, away_team, match_date, kickoff_utc, status, winner, home_score, away_score, last_synced_at
+	query := `SELECT id, external_id, home_team, away_team, match_date, kickoff_utc, status, winner, home_score, away_score, last_synced_at, notified_30min
 	          FROM matches WHERE status IN ('SCHEDULED', 'TIMED', 'IN_PLAY', 'PAUSED') ORDER BY kickoff_utc ASC`
 
 	rows, err := db.Query(query)
@@ -171,6 +176,36 @@ func (db *DB) UpdateMatchResult(externalID int, winner string, homeScore, awaySc
 	return nil
 }
 
+// GetMatchesStartingIn30Min returns SCHEDULED/TIMED matches whose kickoff is
+// between now and now+30 minutes that have not been notified yet.
+func (db *DB) GetMatchesStartingIn30Min() ([]*models.Match, error) {
+	query := `
+		SELECT id, external_id, home_team, away_team, match_date, kickoff_utc,
+		       status, winner, home_score, away_score, last_synced_at, notified_30min
+		FROM matches
+		WHERE status IN ('SCHEDULED', 'TIMED')
+		  AND kickoff_utc > datetime('now')
+		  AND kickoff_utc <= datetime('now', '+30 minutes')
+		  AND notified_30min = 0
+		ORDER BY kickoff_utc ASC`
+
+	rows, err := db.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query pre-match window: %w", err)
+	}
+	defer rows.Close()
+	return scanMatches(rows)
+}
+
+// MarkMatchNotified sets notified_30min = 1 to prevent re-sending the 30-min reminder.
+func (db *DB) MarkMatchNotified(matchID int64) error {
+	_, err := db.Exec(`UPDATE matches SET notified_30min = 1 WHERE id = ?`, matchID)
+	if err != nil {
+		return fmt.Errorf("failed to mark match notified: %w", err)
+	}
+	return nil
+}
+
 func scanMatches(rows *sql.Rows) ([]*models.Match, error) {
 	var matches []*models.Match
 
@@ -179,6 +214,7 @@ func scanMatches(rows *sql.Rows) ([]*models.Match, error) {
 		var winner sql.NullString
 		var homeScore sql.NullInt64
 		var awayScore sql.NullInt64
+		var notified int
 
 		err := rows.Scan(
 			&match.ID,
@@ -192,6 +228,7 @@ func scanMatches(rows *sql.Rows) ([]*models.Match, error) {
 			&homeScore,
 			&awayScore,
 			&match.LastSyncedAt,
+			&notified,
 		)
 
 		if err != nil {
@@ -207,6 +244,7 @@ func scanMatches(rows *sql.Rows) ([]*models.Match, error) {
 		if awayScore.Valid {
 			match.AwayScore = int(awayScore.Int64)
 		}
+		match.NotifiedPreMatch = notified != 0
 
 		matches = append(matches, &match)
 	}
