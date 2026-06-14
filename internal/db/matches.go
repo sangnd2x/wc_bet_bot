@@ -29,6 +29,37 @@ func (db *DB) UpsertMatch(m *models.Match) error {
 	return nil
 }
 
+func (db *DB) GetMatchByID(id int64) (*models.Match, error) {
+	query := `SELECT id, external_id, home_team, away_team, match_date, kickoff_utc, status, winner, home_score, away_score, last_synced_at FROM matches WHERE id = ?`
+
+	var match models.Match
+	var winner sql.NullString
+	var homeScore sql.NullInt64
+	var awayScore sql.NullInt64
+
+	err := db.QueryRow(query, id).Scan(
+		&match.ID, &match.ExternalID, &match.HomeTeam, &match.AwayTeam,
+		&match.MatchDate, &match.KickoffUTC, &match.Status,
+		&winner, &homeScore, &awayScore, &match.LastSyncedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get match by id: %w", err)
+	}
+	if winner.Valid {
+		match.Winner = winner.String
+	}
+	if homeScore.Valid {
+		match.HomeScore = int(homeScore.Int64)
+	}
+	if awayScore.Valid {
+		match.AwayScore = int(awayScore.Int64)
+	}
+	return &match, nil
+}
+
 func (db *DB) GetMatchByExternalID(externalID int) (*models.Match, error) {
 	query := `SELECT id, external_id, home_team, away_team, match_date, kickoff_utc, status, winner, home_score, away_score, last_synced_at FROM matches WHERE external_id = ?`
 

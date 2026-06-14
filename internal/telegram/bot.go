@@ -96,6 +96,8 @@ func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 			b.cmdBets(ctx, msg)
 		case "guess":
 			b.cmdGuess(ctx, msg, msg.CommandArguments())
+		case "clearbet":
+			b.cmdClearBet(ctx, msg)
 		default:
 			reply := tgbotapi.NewMessage(msg.Chat.ID, "Unknown command: /"+cmd)
 			b.api.Send(reply)

@@ -23,6 +23,12 @@ func (b *Bot) handleBetCallback(ctx context.Context, cq *tgbotapi.CallbackQuery)
 		return
 	}
 
+	// Route by prefix
+	if strings.HasPrefix(cq.Data, "clearbet:") {
+		b.handleClearBetCallback(cq)
+		return
+	}
+
 	// Parse callback data — if not "bet:" prefix, ignore
 	if !strings.HasPrefix(cq.Data, "bet:") {
 		b.answerCallback(cq.ID, "Unknown action", false)
@@ -176,7 +182,7 @@ func (b *Bot) handleBetCallback(ctx context.Context, cq *tgbotapi.CallbackQuery)
 				b.api.Send(editMsg)
 
 				// Prompt both users to guess the score
-				prompt := fmt.Sprintf("Both picked %s! Each player guess the score with /guess N-M (e.g. /guess 2-0)", user1TeamName)
+				prompt := fmt.Sprintf("Both picked %s!\nGuess the final score with /guess N-M\n• N = %s goals, M = %s goals\n• e.g. /guess 2-0 means %s 2-0 %s", user1TeamName, match.HomeTeam, match.AwayTeam, match.HomeTeam, match.AwayTeam)
 				b.SendToChat(chatID, prompt)
 			} else {
 				// Normal mode: different teams picked
@@ -271,6 +277,40 @@ func (b *Bot) handleBetCallback(ctx context.Context, cq *tgbotapi.CallbackQuery)
 }
 
 // answerCallback sends an answer to a callback query
+func (b *Bot) handleClearBetCallback(cq *tgbotapi.CallbackQuery) {
+	parts := strings.SplitN(cq.Data, ":", 2)
+	if len(parts) != 2 {
+		b.answerCallback(cq.ID, "Invalid data", false)
+		return
+	}
+	matchID, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil {
+		b.answerCallback(cq.ID, "Invalid match ID", false)
+		return
+	}
+
+	chatID := cq.Message.Chat.ID
+
+	match, err := b.db.GetMatchByID(matchID)
+	if err != nil || match == nil {
+		b.answerCallback(cq.ID, "Match not found", false)
+		return
+	}
+
+	if err := b.db.DeleteBetsForMatchInGroup(matchID, chatID); err != nil {
+		log.Printf("handleClearBetCallback: failed to delete bets: %v", err)
+		b.answerCallback(cq.ID, "Failed to clear bets", false)
+		return
+	}
+
+	b.answerCallback(cq.ID, "Bets cleared ✅", true)
+
+	// Edit the selection message to confirm
+	edited := tgbotapi.NewEditMessageText(chatID, cq.Message.MessageID,
+		fmt.Sprintf("Bets cleared for %s vs %s ✅", match.HomeTeam, match.AwayTeam))
+	b.api.Send(edited)
+}
+
 func (b *Bot) answerCallback(callbackID string, text string, showAlert bool) {
 	callback := tgbotapi.NewCallback(callbackID, text)
 	callback.ShowAlert = showAlert

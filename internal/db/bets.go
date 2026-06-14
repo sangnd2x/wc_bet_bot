@@ -240,38 +240,46 @@ func (db *DB) ResolveBets(matchID int64, winner string, homeScore, awayScore int
 	for _, k := range bucketOrder {
 		bets := buckets[k]
 		if len(bets) == 2 {
-			// Score-guess mode
+			// Score-guess mode: both picked the same team
 			a, b2 := bets[0], bets[1]
-			maxDist := int(^uint(0) >> 1) // MaxInt
 
-			distA := maxDist
-			if a.guessedHome.Valid && a.guessedAway.Valid {
-				distA = abs(int(a.guessedHome.Int64)-homeScore) + abs(int(a.guessedAway.Int64)-awayScore)
-			}
-			distB := maxDist
-			if b2.guessedHome.Valid && b2.guessedAway.Valid {
-				distB = abs(int(b2.guessedHome.Int64)-homeScore) + abs(int(b2.guessedAway.Int64)-awayScore)
-			}
-
-			switch {
-			case distA == maxDist && distB == maxDist:
+			// If the picked team didn't win, both get DRAW
+			if winner != k.pickedTeam {
 				outcomes[a.id] = "DRAW"
 				outcomes[b2.id] = "DRAW"
-			case distA == maxDist:
-				outcomes[a.id] = "LOSS"
-				outcomes[b2.id] = "WIN"
-			case distB == maxDist:
-				outcomes[a.id] = "WIN"
-				outcomes[b2.id] = "LOSS"
-			case distA < distB:
-				outcomes[a.id] = "WIN"
-				outcomes[b2.id] = "LOSS"
-			case distA > distB:
-				outcomes[a.id] = "LOSS"
-				outcomes[b2.id] = "WIN"
-			default:
-				outcomes[a.id] = "DRAW"
-				outcomes[b2.id] = "DRAW"
+			} else {
+				// Team won — closest guess wins
+				maxDist := int(^uint(0) >> 1) // MaxInt
+
+				distA := maxDist
+				if a.guessedHome.Valid && a.guessedAway.Valid {
+					distA = abs(int(a.guessedHome.Int64)-homeScore) + abs(int(a.guessedAway.Int64)-awayScore)
+				}
+				distB := maxDist
+				if b2.guessedHome.Valid && b2.guessedAway.Valid {
+					distB = abs(int(b2.guessedHome.Int64)-homeScore) + abs(int(b2.guessedAway.Int64)-awayScore)
+				}
+
+				switch {
+				case distA == maxDist && distB == maxDist:
+					outcomes[a.id] = "DRAW"
+					outcomes[b2.id] = "DRAW"
+				case distA == maxDist:
+					outcomes[a.id] = "LOSS"
+					outcomes[b2.id] = "WIN"
+				case distB == maxDist:
+					outcomes[a.id] = "WIN"
+					outcomes[b2.id] = "LOSS"
+				case distA < distB:
+					outcomes[a.id] = "WIN"
+					outcomes[b2.id] = "LOSS"
+				case distA > distB:
+					outcomes[a.id] = "LOSS"
+					outcomes[b2.id] = "WIN"
+				default:
+					outcomes[a.id] = "DRAW"
+					outcomes[b2.id] = "DRAW"
+				}
 			}
 		} else {
 			// Normal mode
@@ -412,6 +420,44 @@ func (db *DB) GetUserRecordInGroup(userID, groupChatID int64) (*models.UserRecor
 func (db *DB) DeleteBetsForMatch(matchID int64) error {
 	_, err := db.Exec(`DELETE FROM bets WHERE match_id = ?`, matchID)
 	return err
+}
+
+func (db *DB) DeleteBetsForMatchInGroup(matchID, groupChatID int64) error {
+	_, err := db.Exec(`DELETE FROM bets WHERE match_id = ? AND group_chat_id = ?`, matchID, groupChatID)
+	return err
+}
+
+// MatchSummary is a lightweight match descriptor used for /clearbet selection.
+type MatchSummary struct {
+	MatchID  int64
+	HomeTeam string
+	AwayTeam string
+}
+
+// GetActiveBetMatchesInGroup returns distinct matches that have unresolved bets in a group.
+func (db *DB) GetActiveBetMatchesInGroup(groupChatID int64) ([]MatchSummary, error) {
+	query := `
+		SELECT DISTINCT m.id, m.home_team, m.away_team
+		FROM bets b
+		JOIN matches m ON b.match_id = m.id
+		WHERE b.group_chat_id = ? AND b.resolved_at IS NULL
+		ORDER BY m.kickoff_utc ASC`
+
+	rows, err := db.Query(query, groupChatID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query active bet matches: %w", err)
+	}
+	defer rows.Close()
+
+	var matches []MatchSummary
+	for rows.Next() {
+		var ms MatchSummary
+		if err := rows.Scan(&ms.MatchID, &ms.HomeTeam, &ms.AwayTeam); err != nil {
+			return nil, fmt.Errorf("failed to scan match summary: %w", err)
+		}
+		matches = append(matches, ms)
+	}
+	return matches, rows.Err()
 }
 
 func scanBets(rows *sql.Rows) ([]*models.Bet, error) {

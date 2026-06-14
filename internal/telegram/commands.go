@@ -251,6 +251,33 @@ func (b *Bot) cmdLeaderboard(ctx context.Context, msg *tgbotapi.Message) {
 	b.api.Send(reply)
 }
 
+// cmdClearBet handles /clearbet — shows inline keyboard to delete bets for a specific match
+func (b *Bot) cmdClearBet(ctx context.Context, msg *tgbotapi.Message) {
+	matches, err := b.db.GetActiveBetMatchesInGroup(msg.Chat.ID)
+	if err != nil {
+		log.Printf("cmdClearBet: %v", err)
+		b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, "Failed to fetch bets."))
+		return
+	}
+	if len(matches) == 0 {
+		b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, "No active bets to clear."))
+		return
+	}
+
+	var kbRows [][]tgbotapi.InlineKeyboardButton
+	for _, m := range matches {
+		label := fmt.Sprintf("❌ %s vs %s", m.HomeTeam, m.AwayTeam)
+		data := fmt.Sprintf("clearbet:%d", m.MatchID)
+		kbRows = append(kbRows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(label, data),
+		))
+	}
+
+	reply := tgbotapi.NewMessage(msg.Chat.ID, "Select match to clear bets:")
+	reply.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(kbRows...)
+	b.api.Send(reply)
+}
+
 // cmdGuess handles /guess N-M command for score-guess betting mode
 func (b *Bot) cmdGuess(ctx context.Context, msg *tgbotapi.Message, args string) {
 	args = strings.TrimSpace(args)
@@ -287,8 +314,11 @@ func (b *Bot) cmdGuess(ctx context.Context, msg *tgbotapi.Message, args string) 
 		return
 	}
 	if bet.GuessedHomeScore != nil {
-		b.api.Send(tgbotapi.NewMessage(msg.Chat.ID,
-			fmt.Sprintf("Already guessed %d-%d", *bet.GuessedHomeScore, *bet.GuessedAwayScore)))
+		alreadyText := fmt.Sprintf("Already guessed %d-%d", *bet.GuessedHomeScore, *bet.GuessedAwayScore)
+		if m, err2 := b.db.GetMatchByID(bet.MatchID); err2 == nil && m != nil {
+			alreadyText = fmt.Sprintf("Already guessed %s %d-%d %s", m.HomeTeam, *bet.GuessedHomeScore, *bet.GuessedAwayScore, m.AwayTeam)
+		}
+		b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, alreadyText))
 		return
 	}
 
@@ -298,8 +328,12 @@ func (b *Bot) cmdGuess(ctx context.Context, msg *tgbotapi.Message, args string) 
 		return
 	}
 
-	b.api.Send(tgbotapi.NewMessage(msg.Chat.ID,
-		fmt.Sprintf("Got it! Your guess: %d-%d ✅", homeGuess, awayGuess)))
+	match, err := b.db.GetMatchByID(bet.MatchID)
+	confirmText := fmt.Sprintf("Got it! Your guess: %d-%d ✅", homeGuess, awayGuess)
+	if err == nil && match != nil {
+		confirmText = fmt.Sprintf("Got it! Your guess: %s %d-%d %s ✅", match.HomeTeam, homeGuess, awayGuess, match.AwayTeam)
+	}
+	b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, confirmText))
 }
 
 func min(a, b int) int {
