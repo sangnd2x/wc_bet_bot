@@ -152,6 +152,27 @@ func (p *Poller) Reconcile(ctx context.Context) error {
 		}
 	}
 
+	// Second pass: resolve any already-FINISHED matches with unresolved bets
+	// (catches cases where UpsertMatch set status=FINISHED but ResolveBets never ran)
+	finished, err := p.db.GetFinishedMatchesWithUnresolvedBets()
+	if err != nil {
+		log.Printf("Reconcile: failed to get finished unresolved matches: %v", err)
+	} else {
+		for _, match := range finished {
+			log.Printf("Reconcile: resolving bets for already-finished match %d (%s vs %s)",
+				match.ID, match.HomeTeam, match.AwayTeam)
+			if err := p.db.ResolveBets(match.ID, match.Winner, match.HomeScore, match.AwayScore); err != nil {
+				log.Printf("Reconcile: failed to resolve bets for match %d: %v", match.ID, err)
+			} else {
+				log.Printf("Reconcile: resolved bets for match %d (%s vs %s)",
+					match.ID, match.HomeTeam, match.AwayTeam)
+				if p.onMatchResolved != nil {
+					p.onMatchResolved(match)
+				}
+			}
+		}
+	}
+
 	log.Println("Reconciliation completed")
 	return nil
 }

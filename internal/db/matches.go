@@ -206,6 +206,26 @@ func (db *DB) MarkMatchNotified(matchID int64) error {
 	return nil
 }
 
+// GetFinishedMatchesWithUnresolvedBets returns FINISHED matches that still have unresolved bets.
+// Used by Reconcile to catch cases where status was updated to FINISHED but ResolveBets never ran.
+func (db *DB) GetFinishedMatchesWithUnresolvedBets() ([]*models.Match, error) {
+	query := `
+		SELECT DISTINCT m.id, m.external_id, m.home_team, m.away_team, m.match_date,
+		       m.kickoff_utc, m.status, m.winner, m.home_score, m.away_score,
+		       m.last_synced_at, m.notified_30min
+		FROM matches m
+		JOIN bets b ON b.match_id = m.id
+		WHERE m.status = 'FINISHED' AND b.resolved_at IS NULL
+		ORDER BY m.kickoff_utc ASC`
+
+	rows, err := db.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query finished matches with unresolved bets: %w", err)
+	}
+	defer rows.Close()
+	return scanMatches(rows)
+}
+
 func scanMatches(rows *sql.Rows) ([]*models.Match, error) {
 	var matches []*models.Match
 
