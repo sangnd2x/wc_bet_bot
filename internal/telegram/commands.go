@@ -10,7 +10,6 @@ import (
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"worldcup-bet-bot/internal/db"
-	"worldcup-bet-bot/internal/models"
 )
 
 // cmdStart handles /start command
@@ -46,72 +45,55 @@ How to play:
 	}
 }
 
-// cmdUpcomingMatch handles /upcoming_match command — shows all matches for today
-// in the configured timezone, with kickoff times displayed in that same timezone.
 func (b *Bot) cmdUpcomingMatch(ctx context.Context, msg *tgbotapi.Message) {
 	log.Println("Handling /upcoming_match command")
 
-	// Compute today's start and end in the configured timezone
-	now := time.Now().In(b.loc)
-	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, b.loc)
-	todayEnd := todayStart.AddDate(0, 0, 1)
-
-	// Query DB for today's matches (kickoff in local-day range)
-	matches, err := b.db.GetMatchesByKickoffRange(todayStart.UTC(), todayEnd.UTC())
+	// Step 1: find the next upcoming match to determine which day to show
+	next, err := b.db.GetUpcomingMatches(1)
 	if err != nil {
-		log.Printf("Failed to get today's matches from DB: %v", err)
+		log.Printf("Failed to get next upcoming match: %v", err)
 		b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, "Failed to fetch matches. Please try again."))
 		return
 	}
 
-	// If DB is empty, fetch from API and upsert
-	if len(matches) == 0 {
-		log.Println("No matches in DB for today, fetching from API...")
-
-		// Query the UTC dates that overlap with today in local timezone
-		// (local day can span two UTC dates, so query both)
-		startUTCDate := todayStart.UTC()
-		endUTCDate := todayEnd.UTC().Add(-time.Second) // last second of local day in UTC
-
-		var allAPIMatches []models.Match
-		for _, queryDate := range uniqueUTCDates(startUTCDate, endUTCDate) {
-			apiMatches, err := b.fbClient.GetMatchesByDate(ctx, queryDate)
-			if err != nil {
-				log.Printf("Failed to fetch from API for %s: %v", queryDate.Format("2006-01-02"), err)
-				continue
-			}
-			allAPIMatches = append(allAPIMatches, apiMatches...)
+	// Step 2: if DB empty, sync from API first
+	if len(next) == 0 {
+		log.Println("No upcoming matches in DB, fetching from API...")
+		apiMatches, err := b.fbClient.GetUpcomingMatches(ctx, 7)
+		if err != nil {
+			log.Printf("Failed to fetch from API: %v", err)
+			b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, "Failed to fetch matches from API. Please try again."))
+			return
 		}
-
-		// Upsert all fetched matches
-		for i := range allAPIMatches {
-			allAPIMatches[i].MatchDate = allAPIMatches[i].KickoffUTC.Truncate(24 * time.Hour)
-			if err := b.db.UpsertMatch(&allAPIMatches[i]); err != nil {
+		for i := range apiMatches {
+			apiMatches[i].MatchDate = apiMatches[i].KickoffUTC.Truncate(24 * time.Hour)
+			if err := b.db.UpsertMatch(&apiMatches[i]); err != nil {
 				log.Printf("Failed to upsert match: %v", err)
 			}
 		}
-
-		// Filter to only those in today's local range
-		for i := range allAPIMatches {
-			k := allAPIMatches[i].KickoffUTC
-			if !k.Before(todayStart.UTC()) && k.Before(todayEnd.UTC()) {
-				matches = append(matches, &allAPIMatches[i])
-			}
+		next, err = b.db.GetUpcomingMatches(1)
+		if err != nil || len(next) == 0 {
+			b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, "No upcoming matches found."))
+			return
 		}
 	}
 
-	if len(matches) == 0 {
-		dateStr := todayStart.Format("Mon, 2 Jan 2006")
-		b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, fmt.Sprintf("No matches scheduled for %s.", dateStr)))
+	// Step 3: determine the local date of the next upcoming match
+	nextKickoff := next[0].KickoffUTC.In(b.loc)
+	dayStart := time.Date(nextKickoff.Year(), nextKickoff.Month(), nextKickoff.Day(), 0, 0, 0, 0, b.loc)
+	dayEnd := dayStart.AddDate(0, 0, 1)
+
+	// Step 4: fetch all matches for that local day
+	matches, err := b.db.GetMatchesByKickoffRange(dayStart.UTC(), dayEnd.UTC())
+	if err != nil {
+		log.Printf("Failed to get matches for day: %v", err)
+		b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, "Failed to fetch matches. Please try again."))
 		return
 	}
 
-	// Send header
-	dateStr := todayStart.Format("Mon, 2 Jan 2006")
-	header := fmt.Sprintf("🏆 Matches for %s:", dateStr)
-	b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, header))
-
-	// Send each match
+	// Step 5: send header + all matches
+	dateStr := dayStart.Format("Mon, 2 Jan 2006")
+	b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, fmt.Sprintf("🏆 Matches for %s:", dateStr)))
 	for _, match := range matches {
 		if err := b.SendMatchToChatForGroup(msg.Chat.ID, match); err != nil {
 			log.Printf("Failed to send match: %v", err)
