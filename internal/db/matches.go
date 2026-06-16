@@ -139,6 +139,21 @@ func (db *DB) GetMatchesByDate(date time.Time) ([]*models.Match, error) {
 	return scanMatches(rows)
 }
 
+// GetMatchesByKickoffRange returns matches whose kickoff_utc falls in [start, end).
+// Use this with local-timezone day boundaries converted to UTC for timezone-correct "today's matches".
+func (db *DB) GetMatchesByKickoffRange(start, end time.Time) ([]*models.Match, error) {
+	query := `SELECT id, external_id, home_team, away_team, match_date, kickoff_utc,
+	               status, winner, home_score, away_score, last_synced_at, notified_30min
+	          FROM matches WHERE kickoff_utc >= ? AND kickoff_utc < ? ORDER BY kickoff_utc ASC`
+
+	rows, err := db.Query(query, start, end)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query matches by kickoff range: %w", err)
+	}
+	defer rows.Close()
+	return scanMatches(rows)
+}
+
 func (db *DB) GetUpcomingMatches(limit int) ([]*models.Match, error) {
 	query := `SELECT id, external_id, home_team, away_team, match_date, kickoff_utc, status, winner, home_score, away_score, last_synced_at, notified_30min
 	          FROM matches WHERE status IN ('SCHEDULED', 'TIMED') AND kickoff_utc > datetime('now') ORDER BY kickoff_utc ASC LIMIT ?`

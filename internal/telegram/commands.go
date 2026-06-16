@@ -10,6 +10,7 @@ import (
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"worldcup-bet-bot/internal/db"
+	"worldcup-bet-bot/internal/models"
 )
 
 // cmdStart handles /start command
@@ -45,56 +46,87 @@ How to play:
 	}
 }
 
-// cmdUpcomingMatch handles /upcoming_match command
+// cmdUpcomingMatch handles /upcoming_match command — shows all matches for today
+// in the configured timezone, with kickoff times displayed in that same timezone.
 func (b *Bot) cmdUpcomingMatch(ctx context.Context, msg *tgbotapi.Message) {
 	log.Println("Handling /upcoming_match command")
 
-	// Query DB for next 3 SCHEDULED matches
-	matches, err := b.db.GetUpcomingMatches(3)
+	// Compute today's start and end in the configured timezone
+	now := time.Now().In(b.loc)
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, b.loc)
+	todayEnd := todayStart.AddDate(0, 0, 1)
+
+	// Query DB for today's matches (kickoff in local-day range)
+	matches, err := b.db.GetMatchesByKickoffRange(todayStart.UTC(), todayEnd.UTC())
 	if err != nil {
-		log.Printf("Failed to get upcoming matches from DB: %v", err)
-		reply := tgbotapi.NewMessage(msg.Chat.ID, "Failed to fetch matches. Please try again.")
-		b.api.Send(reply)
+		log.Printf("Failed to get today's matches from DB: %v", err)
+		b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, "Failed to fetch matches. Please try again."))
 		return
 	}
 
-	// If DB empty, call fbClient.GetUpcomingMatches(ctx, 7) and upsert to DB
+	// If DB is empty, fetch from API and upsert
 	if len(matches) == 0 {
-		log.Println("No matches in DB, fetching from API...")
-		apiMatches, err := b.fbClient.GetUpcomingMatches(ctx, 7)
-		if err != nil {
-			log.Printf("Failed to fetch from API: %v", err)
-			reply := tgbotapi.NewMessage(msg.Chat.ID, "Failed to fetch matches from API. Please try again.")
-			b.api.Send(reply)
-			return
+		log.Println("No matches in DB for today, fetching from API...")
+
+		// Query the UTC dates that overlap with today in local timezone
+		// (local day can span two UTC dates, so query both)
+		startUTCDate := todayStart.UTC()
+		endUTCDate := todayEnd.UTC().Add(-time.Second) // last second of local day in UTC
+
+		var allAPIMatches []models.Match
+		for _, queryDate := range uniqueUTCDates(startUTCDate, endUTCDate) {
+			apiMatches, err := b.fbClient.GetMatchesByDate(ctx, queryDate)
+			if err != nil {
+				log.Printf("Failed to fetch from API for %s: %v", queryDate.Format("2006-01-02"), err)
+				continue
+			}
+			allAPIMatches = append(allAPIMatches, apiMatches...)
 		}
 
-		// Upsert to DB
-		for i := range apiMatches {
-			apiMatches[i].MatchDate = apiMatches[i].KickoffUTC.Truncate(24 * time.Hour)
-			if err := b.db.UpsertMatch(&apiMatches[i]); err != nil {
+		// Upsert all fetched matches
+		for i := range allAPIMatches {
+			allAPIMatches[i].MatchDate = allAPIMatches[i].KickoffUTC.Truncate(24 * time.Hour)
+			if err := b.db.UpsertMatch(&allAPIMatches[i]); err != nil {
 				log.Printf("Failed to upsert match: %v", err)
 			}
 		}
 
-		limit := min(3, len(apiMatches))
-		for i := 0; i < limit; i++ {
-			matches = append(matches, &apiMatches[i])
+		// Filter to only those in today's local range
+		for i := range allAPIMatches {
+			k := allAPIMatches[i].KickoffUTC
+			if !k.Before(todayStart.UTC()) && k.Before(todayEnd.UTC()) {
+				matches = append(matches, &allAPIMatches[i])
+			}
 		}
 	}
 
-	// Send each match with keyboard
 	if len(matches) == 0 {
-		reply := tgbotapi.NewMessage(msg.Chat.ID, "No upcoming matches found.")
-		b.api.Send(reply)
+		dateStr := todayStart.Format("Mon, 2 Jan 2006")
+		b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, fmt.Sprintf("No matches scheduled for %s.", dateStr)))
 		return
 	}
 
+	// Send header
+	dateStr := todayStart.Format("Mon, 2 Jan 2006")
+	header := fmt.Sprintf("🏆 Matches for %s:", dateStr)
+	b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, header))
+
+	// Send each match
 	for _, match := range matches {
 		if err := b.SendMatchToChatForGroup(msg.Chat.ID, match); err != nil {
 			log.Printf("Failed to send match: %v", err)
 		}
 	}
+}
+
+// uniqueUTCDates returns the distinct UTC calendar dates that fall in [start, end].
+func uniqueUTCDates(start, end time.Time) []time.Time {
+	startDate := time.Date(start.Year(), start.Month(), start.Day(), 0, 0, 0, 0, time.UTC)
+	endDate := time.Date(end.Year(), end.Month(), end.Day(), 0, 0, 0, 0, time.UTC)
+	if startDate.Equal(endDate) {
+		return []time.Time{startDate}
+	}
+	return []time.Time{startDate, endDate}
 }
 
 // cmdMatches handles /matches <DDMMYYYY> command
@@ -499,13 +531,6 @@ func (b *Bot) applyScoreGuess(chatID, matchID, userID int64, homeGuess, awayGues
 		m.HomeTeam, m.AwayTeam, m.HomeTeam, homeGuess, awayGuess, m.AwayTeam)
 	b.api.Send(tgbotapi.NewMessage(chatID, confirmText))
 	return true
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 // cmdReconcile manually triggers the reconciliation job to resolve stale finished matches.
