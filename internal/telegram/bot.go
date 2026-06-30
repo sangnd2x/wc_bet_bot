@@ -140,6 +140,8 @@ func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 			b.cmdClearBet(ctx, msg)
 		case "changebet":
 			b.cmdChangeBet(ctx, msg)
+		case "history":
+			b.cmdBetHistory(ctx, msg)
 		case "reconcile":
 			b.cmdReconcile(ctx, msg)
 		default:

@@ -700,3 +700,80 @@ func (db *DB) GetAllMyScoreGuessBets(userID, groupChatID int64) ([]*models.Bet, 
 	defer rows.Close()
 	return scanBets(rows)
 }
+
+// BetHistoryRow represents a single resolved bet with full match context,
+// used by /history.
+type BetHistoryRow struct {
+	HomeTeam         string
+	AwayTeam         string
+	KickoffUTC       time.Time
+	PickedTeam       string // "HOME_TEAM" or "AWAY_TEAM"
+	Outcome          string // "WIN", "LOSS", or "DRAW"
+	HomeScore        int
+	AwayScore        int
+	SameTeamMode     bool
+	GuessedHomeScore *int
+	GuessedAwayScore *int
+}
+
+// GetBetHistoryInGroup returns all resolved bets for a user in a group,
+// newest first, joined with match info and same-team-mode detection.
+func (db *DB) GetBetHistoryInGroup(userID, groupChatID int64) ([]*BetHistoryRow, error) {
+	const query = `
+		SELECT
+			m.home_team,
+			m.away_team,
+			m.kickoff_utc,
+			b.picked_team,
+			b.outcome,
+			COALESCE(m.home_score, 0),
+			COALESCE(m.away_score, 0),
+			b.guessed_home_score,
+			b.guessed_away_score,
+			(
+				SELECT COUNT(*)
+				FROM bets b2
+				WHERE b2.match_id     = b.match_id
+				  AND b2.group_chat_id = b.group_chat_id
+				  AND b2.user_id      != b.user_id
+				  AND b2.picked_team   = b.picked_team
+			) > 0 AS same_team_mode
+		FROM bets b
+		JOIN matches m ON b.match_id = m.id
+		WHERE b.user_id      = ?
+		  AND b.group_chat_id = ?
+		  AND b.resolved_at  IS NOT NULL
+		ORDER BY b.resolved_at DESC`
+
+	rows, err := db.Query(query, userID, groupChatID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query bet history: %w", err)
+	}
+	defer rows.Close()
+
+	var history []*BetHistoryRow
+	for rows.Next() {
+		var row BetHistoryRow
+		var guessedHome sql.NullInt64
+		var guessedAway sql.NullInt64
+		if err := rows.Scan(
+			&row.HomeTeam, &row.AwayTeam, &row.KickoffUTC,
+			&row.PickedTeam, &row.Outcome,
+			&row.HomeScore, &row.AwayScore,
+			&guessedHome, &guessedAway,
+			&row.SameTeamMode,
+		); err != nil {
+			return nil, fmt.Errorf("failed to scan bet history row: %w", err)
+		}
+		if guessedHome.Valid {
+			v := int(guessedHome.Int64)
+			row.GuessedHomeScore = &v
+		}
+		if guessedAway.Valid {
+			v := int(guessedAway.Int64)
+			row.GuessedAwayScore = &v
+		}
+		history = append(history, &row)
+	}
+	return history, rows.Err()
+}

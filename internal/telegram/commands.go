@@ -29,6 +29,7 @@ Available commands:
 /guess N-M - Guess score when both players pick same team
 /clearbet - Clear bets for a specific match
 /changebet - Change your team pick or score guess
+/history - Show your resolved bet history in this group
 /reconcile - Manually trigger reconciliation of finished matches
 /start - Show this help message
 
@@ -592,5 +593,66 @@ func (b *Bot) cmdBets(ctx context.Context, msg *tgbotapi.Message) {
 	reply.ParseMode = "HTML"
 	if _, err := b.api.Send(reply); err != nil {
 		log.Printf("failed to send /bets reply: %v", err)
+	}
+}
+
+// cmdBetHistory handles /history — shows resolved bets for the calling user in this group.
+func (b *Bot) cmdBetHistory(ctx context.Context, msg *tgbotapi.Message) {
+	log.Printf("Handling /history command from user %d in chat %d", msg.From.ID, msg.Chat.ID)
+
+	user, err := b.EnsureUserRegistered(msg.From)
+	if err != nil {
+		b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, "Failed to register user."))
+		return
+	}
+
+	history, err := b.db.GetBetHistoryInGroup(user.ID, msg.Chat.ID)
+	if err != nil {
+		log.Printf("cmdBetHistory: %v", err)
+		b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, "Failed to fetch your bet history."))
+		return
+	}
+
+	if len(history) == 0 {
+		b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, "No resolved bets found for you in this group."))
+		return
+	}
+
+	text := "📜 <b>Your Bet History</b>\n─────────────────────\n"
+	for _, row := range history {
+		outcomeEmoji := "🤝"
+		switch row.Outcome {
+		case "WIN":
+			outcomeEmoji = "✅"
+		case "LOSS":
+			outcomeEmoji = "❌"
+		}
+
+		pickedTeamName := row.AwayTeam
+		if row.PickedTeam == "HOME_TEAM" {
+			pickedTeamName = row.HomeTeam
+		}
+
+		kickoff := row.KickoffUTC.In(b.loc)
+		dateStr := kickoff.Format("2 Jan, 15:04 MST")
+
+		text += fmt.Sprintf("\n%s <b>%s vs %s</b> — %s — Picked: %s\n",
+			outcomeEmoji, row.HomeTeam, row.AwayTeam, dateStr, pickedTeamName)
+
+		if row.SameTeamMode {
+			text += fmt.Sprintf("   Score: %d-%d", row.HomeScore, row.AwayScore)
+			if row.GuessedHomeScore != nil && row.GuessedAwayScore != nil {
+				text += fmt.Sprintf("  |  Your guess: %d-%d", *row.GuessedHomeScore, *row.GuessedAwayScore)
+			} else {
+				text += "  |  No guess submitted"
+			}
+			text += "\n"
+		}
+	}
+
+	reply := tgbotapi.NewMessage(msg.Chat.ID, text)
+	reply.ParseMode = "HTML"
+	if _, err := b.api.Send(reply); err != nil {
+		log.Printf("failed to send /history reply: %v", err)
 	}
 }
