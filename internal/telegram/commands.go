@@ -597,60 +597,65 @@ func (b *Bot) cmdBets(ctx context.Context, msg *tgbotapi.Message) {
 	}
 }
 
-// cmdBetHistory handles /history — shows resolved bets for the calling user in this group.
+// cmdBetHistory handles /history — shows all resolved match bets in this group.
 func (b *Bot) cmdBetHistory(ctx context.Context, msg *tgbotapi.Message) {
 	log.Printf("Handling /history command from user %d in chat %d", msg.From.ID, msg.Chat.ID)
 
-	user, err := b.EnsureUserRegistered(msg.From)
-	if err != nil {
-		b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, "Failed to register user."))
-		return
-	}
-
-	history, err := b.db.GetBetHistoryInGroup(user.ID, msg.Chat.ID)
+	history, err := b.db.GetGroupMatchHistory(msg.Chat.ID)
 	if err != nil {
 		log.Printf("cmdBetHistory: %v", err)
-		b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, "Failed to fetch your bet history."))
+		b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, "Failed to fetch bet history."))
 		return
 	}
 
 	if len(history) == 0 {
-		b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, "No resolved bets found for you in this group."))
+		b.api.Send(tgbotapi.NewMessage(msg.Chat.ID, "No resolved bets found in this group."))
 		return
 	}
 
+	outcomeEmoji := func(o string) string {
+		switch o {
+		case "WIN":
+			return "✅"
+		case "LOSS":
+			return "❌"
+		default:
+			return "🤝"
+		}
+	}
+	teamName := func(match *db.MatchHistoryRow, picked string) string {
+		if picked == "HOME_TEAM" {
+			return match.HomeTeam
+		}
+		return match.AwayTeam
+	}
+
 	const maxLen = 4000
-	header := "📜 <b>Your Bet History</b>\n─────────────────────\n"
+	header := "📜 <b>Bet History</b>\n─────────────────────\n"
 	chunks := []string{header}
 
-	for _, row := range history {
-		outcomeEmoji := "🤝"
-		switch row.Outcome {
-		case "WIN":
-			outcomeEmoji = "✅"
-		case "LOSS":
-			outcomeEmoji = "❌"
-		}
-
-		pickedTeamName := row.AwayTeam
-		if row.PickedTeam == "HOME_TEAM" {
-			pickedTeamName = row.HomeTeam
-		}
-
-		kickoff := row.KickoffUTC.In(b.loc)
+	for _, match := range history {
+		kickoff := match.KickoffUTC.In(b.loc)
 		dateStr := kickoff.Format("2 Jan, 15:04 MST")
 
-		entry := fmt.Sprintf("\n%s <b>%s vs %s</b> — %s — Picked: %s\n",
-			outcomeEmoji, html.EscapeString(row.HomeTeam), html.EscapeString(row.AwayTeam), dateStr, html.EscapeString(pickedTeamName))
+		entry := fmt.Sprintf("\n<b>%s vs %s</b> — %s — Score: %d-%d\n",
+			html.EscapeString(match.HomeTeam), html.EscapeString(match.AwayTeam),
+			dateStr, match.HomeScore, match.AwayScore)
 
-		if row.SameTeamMode {
-			entry += fmt.Sprintf("   Score: %d-%d", row.HomeScore, row.AwayScore)
-			if row.GuessedHomeScore != nil && row.GuessedAwayScore != nil {
-				entry += fmt.Sprintf("  |  Your guess: %d-%d", *row.GuessedHomeScore, *row.GuessedAwayScore)
+		// same-team mode: all bets on same team
+		sameTeam := len(match.Bets) == 2 && match.Bets[0].PickedTeam == match.Bets[1].PickedTeam
+		for _, bet := range match.Bets {
+			picked := html.EscapeString(teamName(match, bet.PickedTeam))
+			if sameTeam {
+				line := fmt.Sprintf("  %s %s → %s", outcomeEmoji(bet.Outcome), html.EscapeString(bet.DisplayName), picked)
+				if bet.GuessedHomeScore != nil && bet.GuessedAwayScore != nil {
+					line += fmt.Sprintf(" (guess: %d-%d)", *bet.GuessedHomeScore, *bet.GuessedAwayScore)
+				}
+				entry += line + "\n"
 			} else {
-				entry += "  |  No guess submitted"
+				entry += fmt.Sprintf("  %s %s → %s\n",
+					outcomeEmoji(bet.Outcome), html.EscapeString(bet.DisplayName), picked)
 			}
-			entry += "\n"
 		}
 
 		last := chunks[len(chunks)-1]

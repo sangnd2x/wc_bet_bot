@@ -701,79 +701,89 @@ func (db *DB) GetAllMyScoreGuessBets(userID, groupChatID int64) ([]*models.Bet, 
 	return scanBets(rows)
 }
 
-// BetHistoryRow represents a single resolved bet with full match context,
-// used by /history.
-type BetHistoryRow struct {
-	HomeTeam         string
-	AwayTeam         string
-	KickoffUTC       time.Time
+// MatchBetEntry represents one user's bet on a match, used by /history.
+type MatchBetEntry struct {
+	DisplayName      string
 	PickedTeam       string // "HOME_TEAM" or "AWAY_TEAM"
 	Outcome          string // "WIN", "LOSS", or "DRAW"
-	HomeScore        int
-	AwayScore        int
-	SameTeamMode     bool
 	GuessedHomeScore *int
 	GuessedAwayScore *int
 }
 
-// GetBetHistoryInGroup returns all resolved bets for a user in a group,
-// newest first, joined with match info and same-team-mode detection.
-func (db *DB) GetBetHistoryInGroup(userID, groupChatID int64) ([]*BetHistoryRow, error) {
+// MatchHistoryRow groups all bets for one resolved match, used by /history.
+type MatchHistoryRow struct {
+	HomeTeam   string
+	AwayTeam   string
+	KickoffUTC time.Time
+	HomeScore  int
+	AwayScore  int
+	Bets       []MatchBetEntry
+}
+
+// GetGroupMatchHistory returns all resolved matches in a group with every
+// participant's bet, newest first.
+func (db *DB) GetGroupMatchHistory(groupChatID int64) ([]*MatchHistoryRow, error) {
 	const query = `
 		SELECT
+			m.id,
 			m.home_team,
 			m.away_team,
 			m.kickoff_utc,
-			b.picked_team,
-			b.outcome,
 			COALESCE(m.home_score, 0),
 			COALESCE(m.away_score, 0),
+			b.picked_team,
+			b.outcome,
 			b.guessed_home_score,
 			b.guessed_away_score,
-			(
-				SELECT COUNT(*)
-				FROM bets b2
-				WHERE b2.match_id     = b.match_id
-				  AND b2.group_chat_id = b.group_chat_id
-				  AND b2.user_id      != b.user_id
-				  AND b2.picked_team   = b.picked_team
-			) > 0 AS same_team_mode
+			u.display_name
 		FROM bets b
 		JOIN matches m ON b.match_id = m.id
-		WHERE b.user_id      = ?
-		  AND b.group_chat_id = ?
-		  AND b.resolved_at  IS NOT NULL
-		ORDER BY b.resolved_at DESC`
+		JOIN users u ON b.user_id = u.id
+		WHERE b.group_chat_id = ?
+		  AND b.resolved_at IS NOT NULL
+		ORDER BY m.kickoff_utc DESC, m.id, b.user_id`
 
-	rows, err := db.Query(query, userID, groupChatID)
+	rows, err := db.Query(query, groupChatID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query bet history: %w", err)
+		return nil, fmt.Errorf("failed to query group match history: %w", err)
 	}
 	defer rows.Close()
 
-	var history []*BetHistoryRow
+	var result []*MatchHistoryRow
+	matchIndex := map[int64]int{} // match_id → index in result
+
 	for rows.Next() {
-		var row BetHistoryRow
-		var guessedHome sql.NullInt64
-		var guessedAway sql.NullInt64
+		var matchID int64
+		var mr MatchHistoryRow
+		var entry MatchBetEntry
+		var guessedHome, guessedAway sql.NullInt64
+
 		if err := rows.Scan(
-			&row.HomeTeam, &row.AwayTeam, &row.KickoffUTC,
-			&row.PickedTeam, &row.Outcome,
-			&row.HomeScore, &row.AwayScore,
+			&matchID,
+			&mr.HomeTeam, &mr.AwayTeam, &mr.KickoffUTC,
+			&mr.HomeScore, &mr.AwayScore,
+			&entry.PickedTeam, &entry.Outcome,
 			&guessedHome, &guessedAway,
-			&row.SameTeamMode,
+			&entry.DisplayName,
 		); err != nil {
-			return nil, fmt.Errorf("failed to scan bet history row: %w", err)
+			return nil, fmt.Errorf("failed to scan match history row: %w", err)
 		}
 		if guessedHome.Valid {
 			v := int(guessedHome.Int64)
-			row.GuessedHomeScore = &v
+			entry.GuessedHomeScore = &v
 		}
 		if guessedAway.Valid {
 			v := int(guessedAway.Int64)
-			row.GuessedAwayScore = &v
+			entry.GuessedAwayScore = &v
 		}
-		history = append(history, &row)
+
+		if idx, seen := matchIndex[matchID]; seen {
+			result[idx].Bets = append(result[idx].Bets, entry)
+		} else {
+			matchIndex[matchID] = len(result)
+			mr.Bets = []MatchBetEntry{entry}
+			result = append(result, &mr)
+		}
 	}
-	return history, rows.Err()
+	return result, rows.Err()
 }
