@@ -619,7 +619,10 @@ func (b *Bot) cmdBetHistory(ctx context.Context, msg *tgbotapi.Message) {
 		return
 	}
 
-	text := "📜 <b>Your Bet History</b>\n─────────────────────\n"
+	const maxLen = 4000
+	header := "📜 <b>Your Bet History</b>\n─────────────────────\n"
+	chunks := []string{header}
+
 	for _, row := range history {
 		outcomeEmoji := "🤝"
 		switch row.Outcome {
@@ -637,23 +640,32 @@ func (b *Bot) cmdBetHistory(ctx context.Context, msg *tgbotapi.Message) {
 		kickoff := row.KickoffUTC.In(b.loc)
 		dateStr := kickoff.Format("2 Jan, 15:04 MST")
 
-		text += fmt.Sprintf("\n%s <b>%s vs %s</b> — %s — Picked: %s\n",
+		entry := fmt.Sprintf("\n%s <b>%s vs %s</b> — %s — Picked: %s\n",
 			outcomeEmoji, html.EscapeString(row.HomeTeam), html.EscapeString(row.AwayTeam), dateStr, html.EscapeString(pickedTeamName))
 
 		if row.SameTeamMode {
-			text += fmt.Sprintf("   Score: %d-%d", row.HomeScore, row.AwayScore)
+			entry += fmt.Sprintf("   Score: %d-%d", row.HomeScore, row.AwayScore)
 			if row.GuessedHomeScore != nil && row.GuessedAwayScore != nil {
-				text += fmt.Sprintf("  |  Your guess: %d-%d", *row.GuessedHomeScore, *row.GuessedAwayScore)
+				entry += fmt.Sprintf("  |  Your guess: %d-%d", *row.GuessedHomeScore, *row.GuessedAwayScore)
 			} else {
-				text += "  |  No guess submitted"
+				entry += "  |  No guess submitted"
 			}
-			text += "\n"
+			entry += "\n"
+		}
+
+		last := chunks[len(chunks)-1]
+		if len(last)+len(entry) > maxLen {
+			chunks = append(chunks, entry)
+		} else {
+			chunks[len(chunks)-1] = last + entry
 		}
 	}
 
-	reply := tgbotapi.NewMessage(msg.Chat.ID, text)
-	reply.ParseMode = "HTML"
-	if _, err := b.api.Send(reply); err != nil {
-		log.Printf("failed to send /history reply: %v", err)
+	for _, chunk := range chunks {
+		reply := tgbotapi.NewMessage(msg.Chat.ID, chunk)
+		reply.ParseMode = "HTML"
+		if _, err := b.api.Send(reply); err != nil {
+			log.Printf("failed to send /history reply: %v", err)
+		}
 	}
 }
