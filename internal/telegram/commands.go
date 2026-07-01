@@ -3,6 +3,7 @@ package telegram
 import (
 	"context"
 	"fmt"
+	"html"
 	"log"
 	"strconv"
 	"strings"
@@ -637,7 +638,7 @@ func (b *Bot) cmdBetHistory(ctx context.Context, msg *tgbotapi.Message) {
 		dateStr := kickoff.Format("2 Jan, 15:04 MST")
 
 		text += fmt.Sprintf("\n%s <b>%s vs %s</b> — %s — Picked: %s\n",
-			outcomeEmoji, row.HomeTeam, row.AwayTeam, dateStr, pickedTeamName)
+			outcomeEmoji, html.EscapeString(row.HomeTeam), html.EscapeString(row.AwayTeam), dateStr, html.EscapeString(pickedTeamName))
 
 		if row.SameTeamMode {
 			text += fmt.Sprintf("   Score: %d-%d", row.HomeScore, row.AwayScore)
